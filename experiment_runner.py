@@ -29,6 +29,7 @@ SCENARIO_SEED = 42
 SCENARIO_GENERATOR = "generate_scenarios.py"
 RUN_SCRIPT = "run.py"
 CMDP_SCRIPT = "cmdp_refactored.py"
+BASELINE_RUNNER_SCRIPT = "baseline_runner.py"
 
 
 def run_command(cmd, cwd):
@@ -181,6 +182,28 @@ def run_monte_carlo(
         )
 
 
+def run_baseline_runner(
+    terrain_dir,
+    experiment_dir,
+    python_exe,
+):
+    """
+    Run the complete RRT*/RW-RRT* baseline suite for this terrain
+    immediately after all CMDP conditions for the terrain are complete.
+    """
+    run_command(
+        [
+            python_exe,
+            str(experiment_dir / BASELINE_RUNNER_SCRIPT),
+            "--experiments-dir",
+            str(terrain_dir.parent),
+            "--terrain",
+            terrain_dir.name,
+        ],
+        cwd=experiment_dir,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the complete CMDP + PyBullet Monte Carlo experiment."
@@ -287,6 +310,20 @@ def main():
                 )
 
                 total_trials += NUM_MONTE_CARLO
+
+        # CMDP for this terrain is now complete.
+        # Only after ALL scenarios and D values have finished,
+        # run the RRT*/RW-RRT* baseline suite for this terrain.
+        print("\n" + "#" * 80)
+        print(f"CMDP COMPLETE FOR TERRAIN: {terrain_dir.name}")
+        print(f"STARTING BASELINE RUNNER: {BASELINE_RUNNER_SCRIPT}")
+        print("#" * 80)
+
+        run_baseline_runner(
+            terrain_dir=terrain_dir,
+            experiment_dir=experiment_dir,
+            python_exe=args.python,
+        )
 
     print("\n" + "=" * 80)
     print("EXPERIMENT COMPLETE")
