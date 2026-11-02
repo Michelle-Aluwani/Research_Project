@@ -1,0 +1,2 @@
+time_s,mode,robot_x,robot_y,waypoint,look_x,look_y,target_s_m,route_error_m,local_route_error_m,desired_travel_yaw_deg,actual_travel_yaw_deg,heading_error_deg,target_change_deg,steering,yaw_rate_deg_s,pitch_deg,roll_deg,progress_m,recovering,body_yaw_deg
+0.0,waypoint_follow,-19.608786595129143,-181.39668650030794,1,-18.94917039907668,-187.00615495275218,5.804513196374609,0.009095131677363522,0.009095131677363522,-83.29339989466258,-83.88295965962442,0.5895597649618354,0.0,-0.02057951807173586,0.05365602959123289,-3.8186078794195097,-7.989407105180234,0.0,0,96.11704034037558

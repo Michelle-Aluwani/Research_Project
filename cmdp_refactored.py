@@ -10,10 +10,14 @@ blocks have been removed. The research calculations are kept in functions
 so that the same code can be reused for different terrain/configurations.
 
 Important:
-- Terrain IDs: rock=0, mud=1, water=2
-- Terrain risk: rock=0.0, mud=0.25, water=1.0
-- The Step 8 weights below are the weights actually present in the supplied
-  notebook: [0.40, 0.10, 0.40, 0.10].
+- Terrain IDs: rock=0, mud=1, water=2, wall=3
+- Terrain risk: rock=0.0, mud=0.25, water=1.0. Wall cells (id 3) have NO
+  terrain-risk value, so their weighted risk is NaN, i.e. they are
+  non-traversable for the CMDP solver and for RRT*.
+- The Step 8 weights are (slope, roughness, terrain, clearance) =
+  (0.30, 0.15, 0.40, 0.15).
+- OBJ objects are classified BY NAME: terrain_rock, mud_*, water_*, wall*.
+  Blender "Y up" exports are detected and converted to Z up automatically.
 - The Step 11A solver preserves the supplied notebook's 2-D movement-cost
   calculation. Step 2's standalone helper still supports the notebook's
   3-D geometric movement cost.
@@ -24,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -40,11 +45,20 @@ TERRAIN_NAMES = {
     0: "rock",
     1: "mud",
     2: "water",
+    3: "wall",
 }
+
+WALL_ID = 3
+
+# Bump this whenever the terrain_grid.json content/meaning changes, so the
+# runners can detect (and regenerate) stale files.
+TERRAIN_GRID_SCHEMA_VERSION = 2
+
+DEFAULT_RISK_WEIGHTS = (0.30, 0.15, 0.40, 0.15)  # (slope, rough, terrain, clearance)
 
 TERRAIN_RISK_VALUES = {
     0: 0.0,
-    1: 0.25,
+    1: 0.5,
     2: 1.0,
 }
 
@@ -85,6 +99,10 @@ class TerrainData:
     @property
     def valid_terrain_mask(self) -> np.ndarray:
         return np.isfinite(self.height_grid)
+
+    @property
+    def wall_mask(self) -> np.ndarray:
+        return self.grid == WALL_ID
 
 
 @dataclass
@@ -204,33 +222,137 @@ def check_obj(
     return result
 
 
-def _load_terrain_meshes(obj_path: Path) -> Dict[str, object]:
-    import trimesh
+def classify_obj_group(name: str) -> Optional[str]:
+    """Map an OBJ object/group name to rock / mud / water / wall (or None)."""
+    lowered = name.lower()
+    if "wall" in lowered:
+        return "wall"
+    if "water" in lowered:
+        return "water"
+    if "mud" in lowered:
+        return "mud"
+    if "rock" in lowered:
+        return "rock"
+    return None
 
-    scene = trimesh.load(obj_path, force="scene", process=False)
 
-    if isinstance(scene, trimesh.Trimesh):
+def read_obj_groups(obj_path: Path):
+    """Parse an OBJ by object name.
+
+    Returns ``(vertices, groups, info)`` where
+
+    * ``vertices`` is an (N, 3) float64 array in a **Z-up** frame,
+    * ``groups`` maps each OBJ object name to an (M, 3) int array of
+      triangle vertex indices (polygons are fan-triangulated),
+    * ``info`` has ``up_axis_in_file`` ("Z" or "Y") and ``converted``.
+
+    Blender's default OBJ export is Y-up. The rock surface is a flat
+    heightfield, so the axis along which the rock mesh is thinnest is the
+    vertical axis. If that is Y, every vertex is rotated (x, y, z) ->
+    (x, -z, y), which is exactly what a Z-up export would have produced.
+    """
+    obj_path = Path(obj_path)
+    if not obj_path.is_file():
+        raise FileNotFoundError(obj_path)
+
+    vertices = []
+    raw_faces: Dict[str, List[Tuple[int, int, int]]] = {}
+    current = "default"
+
+    with open(obj_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if not line or line[0] not in "vofg":
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            tag = parts[0]
+            if tag == "v":
+                vertices.append(
+                    (float(parts[1]), float(parts[2]), float(parts[3]))
+                )
+            elif tag in ("o", "g"):
+                if len(parts) >= 2:
+                    current = parts[1]
+            elif tag == "f":
+                idx = []
+                for token in parts[1:]:
+                    i = int(token.split("/")[0])
+                    idx.append(i - 1 if i > 0 else len(vertices) + i)
+                if len(idx) >= 3:
+                    bucket = raw_faces.setdefault(current, [])
+                    for k in range(1, len(idx) - 1):
+                        bucket.append((idx[0], idx[k], idx[k + 1]))
+
+    if not vertices:
+        raise ValueError(f"{obj_path.name}: OBJ contains no vertices.")
+
+    vertices = np.asarray(vertices, dtype=np.float64)
+    groups = {
+        name: np.asarray(faces, dtype=np.int64)
+        for name, faces in raw_faces.items()
+        if faces
+    }
+
+    rock_names = [n for n in groups if classify_obj_group(n) == "rock"]
+    if not rock_names:
         raise ValueError(
-            "The terrain OBJ must contain named rock/mud/water meshes."
+            f"{obj_path.name}: no rock object found. Objects present: "
+            f"{sorted(groups)}. Name the ground object 'terrain_rock'."
         )
 
+    rock_faces = np.concatenate([groups[n] for n in rock_names])
+    rock_vertices = vertices[np.unique(rock_faces)]
+    extent = rock_vertices.max(axis=0) - rock_vertices.min(axis=0)
+    vertical = int(np.argmin(extent))
+
+    if vertical == 2:
+        info = {"up_axis_in_file": "Z", "converted": False}
+    elif vertical == 1:
+        vertices = np.column_stack(
+            (vertices[:, 0], -vertices[:, 2], vertices[:, 1])
+        )
+        info = {"up_axis_in_file": "Y", "converted": True}
+    else:
+        raise ValueError(
+            f"{obj_path.name}: the rock mesh is thinnest along X "
+            f"(extent {extent.round(2).tolist()}); cannot determine the "
+            "up axis. Re-export from Blender with Up = Z."
+        )
+
+    return vertices, groups, info
+
+
+def group_faces_by_type(groups: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """Concatenate all OBJ objects of the same type (rock/mud/water/wall)."""
+    by_type: Dict[str, List[np.ndarray]] = {
+        "rock": [], "mud": [], "water": [], "wall": []
+    }
+    for name, faces in groups.items():
+        kind = classify_obj_group(name)
+        if kind is not None:
+            by_type[kind].append(faces)
+    return {
+        kind: np.concatenate(parts)
+        for kind, parts in by_type.items()
+        if parts
+    }
+
+
+def _load_terrain_meshes(obj_path: Path) -> Dict[str, object]:
+    """Return one trimesh per terrain type: rock (required), mud, water,
+    wall (all optional)."""
+    import trimesh
+
+    vertices, groups, info = read_obj_groups(Path(obj_path))
+    faces_by_type = group_faces_by_type(groups)
+
     meshes = {}
-    for name, mesh in scene.geometry.items():
-        if not isinstance(mesh, trimesh.Trimesh):
-            continue
-
-        name_lower = name.lower()
-        if "water" in name_lower:
-            meshes["water"] = mesh
-        elif "mud" in name_lower:
-            meshes["mud"] = mesh
-        elif "rock" in name_lower:
-            meshes["rock"] = mesh
-
-    missing = set(TERRAIN_NAMES.values()) - set(meshes)
-    if missing:
-        raise ValueError(f"Missing terrain meshes: {sorted(missing)}")
-
+    for kind, faces in faces_by_type.items():
+        meshes[kind] = trimesh.Trimesh(
+            vertices=vertices, faces=faces, process=False
+        )
+    meshes["_info"] = info
     return meshes
 
 
@@ -292,7 +414,11 @@ def generate_terrain_grid(
         raise ValueError("samples_per_side must be >= 1.")
 
     meshes = _load_terrain_meshes(Path(obj_path))
+    obj_info = meshes.pop("_info")
+    wall_mesh = meshes.pop("wall", None)
 
+    # Grid bounds come from the ground meshes only (as before), so adding
+    # walls does not move the grid. Wall cells are overlaid on it.
     bounds = np.array([mesh.bounds for mesh in meshes.values()])
     min_x = float(np.min(bounds[:, 0, 0]))
     min_y = float(np.min(bounds[:, 0, 1]))
@@ -325,14 +451,36 @@ def generate_terrain_grid(
         sample_y, (nx, ny, samples_per_side, samples_per_side)
     ).reshape(-1)
 
+    # Wall tops are ~12 m high, so ray start height must clear them.
+    ray_max_z = max_z
+    if wall_mesh is not None:
+        ray_max_z = max(ray_max_z, float(wall_mesh.bounds[1, 2]))
+
     surface_heights = {}
     for terrain_name in ("rock", "mud", "water"):
-        surface_heights[terrain_name] = _raycast_surface(
-            meshes[terrain_name],
-            sample_x,
-            sample_y,
-            max_z,
-            chunk_size,
+        if terrain_name in meshes:
+            surface_heights[terrain_name] = _raycast_surface(
+                meshes[terrain_name],
+                sample_x,
+                sample_y,
+                ray_max_z,
+                chunk_size,
+            )
+        else:
+            # Optional layer (e.g. a terrain with no water): never hit.
+            surface_heights[terrain_name] = np.full(
+                len(sample_x), -np.inf, dtype=np.float64
+            )
+
+    if wall_mesh is not None:
+        wall_hit = np.isfinite(
+            _raycast_surface(
+                wall_mesh, sample_x, sample_y, ray_max_z, chunk_size
+            )
+        ).reshape(nx, ny, samples_per_side, samples_per_side)
+    else:
+        wall_hit = np.zeros(
+            (nx, ny, samples_per_side, samples_per_side), dtype=bool
         )
 
     surface_stack = np.vstack(
@@ -367,6 +515,18 @@ def generate_terrain_grid(
             heights = sample_height_grid[x, y].reshape(-1)
             valid = valid_grid[x, y].reshape(-1)
 
+            # Wall cell: most of the cell's samples hit a wall mesh. The
+            # stored height is the GROUND height under the wall, never the
+            # ~12 m wall top, so slope/roughness of neighbouring cells stay
+            # meaningful.
+            wall_fraction = float(np.mean(wall_hit[x, y]))
+            if wall_fraction > 0.5:
+                cell_types[x, y] = WALL_ID
+                cell_coverage[x, y] = wall_fraction
+                if np.any(valid):
+                    cell_heights[x, y] = np.mean(heights[valid])
+                continue
+
             if not np.any(valid):
                 continue
 
@@ -395,7 +555,9 @@ def generate_terrain_grid(
     )
 
     if json_path is not None:
-        save_terrain_grid(terrain, Path(json_path), samples_per_side)
+        save_terrain_grid(
+            terrain, Path(json_path), samples_per_side, obj_info=obj_info
+        )
 
     return terrain
 
@@ -444,6 +606,7 @@ def save_terrain_grid(
     terrain: TerrainData,
     json_path: Path,
     samples_per_side: int = 5,
+    obj_info: Optional[Dict] = None,
 ) -> None:
     """Save terrain data using the notebook's JSON structure."""
     height_grid_json = [
@@ -467,10 +630,13 @@ def save_terrain_grid(
                 "up_axis": "Z",
                 "surface_direction": "+Z",
             },
+            "schema_version": TERRAIN_GRID_SCHEMA_VERSION,
+            "obj_info": obj_info or {},
             "terrain_types": {
                 "0": "rock",
                 "1": "mud",
                 "2": "water",
+                "3": "wall",
             },
             "bounds_m": terrain.bounds,
             "classification": {
@@ -479,6 +645,8 @@ def save_terrain_grid(
                 "sample_layout": f"{samples_per_side}x{samples_per_side}",
                 "surface_rule": "highest_exposed_surface_wins",
                 "water_over_mud": True,
+                "wall_rule": "majority_of_samples_hit_wall_mesh; "
+                             "height_grid keeps ground height under walls",
             },
         },
         "grid": terrain.grid.tolist(),
@@ -606,6 +774,8 @@ def calculate_slope(terrain: TerrainData) -> np.ndarray:
         np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))
     )
     slope_deg[~valid] = np.nan
+    # Wall cells have no terrain risk; keep them out of the normalisation.
+    slope_deg[terrain.wall_mask] = np.nan
     return slope_deg
 
 
@@ -636,6 +806,7 @@ def calculate_roughness(terrain: TerrainData) -> np.ndarray:
             if len(valid) >= 2:
                 roughness[x, y] = np.std(valid)
 
+    roughness[terrain.wall_mask] = np.nan
     return roughness
 
 
@@ -675,21 +846,31 @@ def calculate_clearance(
     slope_deg: np.ndarray,
     wall_slope_threshold: float = 45.0,
 ) -> np.ndarray:
-    """Calculate distance to the nearest wall-like cell in metres."""
+    """Distance (m) to the nearest obstacle cell.
+
+    Obstacle cells are (a) real wall cells (grid id 3) and (b) steep
+    wall-like terrain cells with slope >= ``wall_slope_threshold``.
+    Wall cells themselves get NaN clearance (they are not traversable).
+    """
     from scipy.ndimage import distance_transform_edt
 
-    valid = np.isfinite(terrain.height_grid)
+    real_walls = terrain.wall_mask
+    valid = np.isfinite(terrain.height_grid) & ~real_walls
 
-    wall_cells = (
+    steep_cells = (
         valid
         & np.isfinite(slope_deg)
         & (slope_deg >= wall_slope_threshold)
     )
+    obstacle_cells = steep_cells | real_walls
 
-    clearance = distance_transform_edt(
-        ~wall_cells,
-        sampling=terrain.resolution,
-    )
+    if np.any(obstacle_cells):
+        clearance = distance_transform_edt(
+            ~obstacle_cells,
+            sampling=terrain.resolution,
+        )
+    else:
+        clearance = np.full(terrain.shape, np.inf, dtype=np.float64)
 
     clearance[~valid] = np.nan
     return clearance
@@ -789,7 +970,7 @@ def calculate_risk_features(
 
 def calculate_weighted_risk(
     features: RiskFeatures,
-    weights: Sequence[float] = (0.40, 0.10, 0.40, 0.10),
+    weights: Sequence[float] = DEFAULT_RISK_WEIGHTS,
 ) -> np.ndarray:
     """Calculate d(x,a) from the four risk components."""
     weights = np.asarray(weights, dtype=np.float64)
@@ -1802,7 +1983,7 @@ def analyse_cmdp_path(
 def prepare_risk_model(
     terrain: TerrainData,
     wall_slope_threshold: float = 45.0,
-    risk_weights: Sequence[float] = (0.40, 0.10, 0.40, 0.10),
+    risk_weights: Sequence[float] = DEFAULT_RISK_WEIGHTS,
 ) -> RiskFeatures:
     """Run Steps 3-8 as one reusable preprocessing operation."""
     slope_deg = calculate_slope(terrain)
@@ -1834,13 +2015,18 @@ def run_experiment(
     start: GridState,
     goal: GridState,
     risk_budget: float,
-    risk_weights: Sequence[float] = (0.40, 0.10, 0.40, 0.10),
+    risk_weights: Sequence[float] = DEFAULT_RISK_WEIGHTS,
     wall_slope_threshold: float = 45.0,
     output_path: Optional[Path] = None,
     backend: str = "auto",
     device: Optional[str] = None,
+    path_output: Optional[Path] = None,
 ) -> Dict:
-    """Run Steps 3-11C for one terrain/scenario/D condition."""
+    """Run Steps 3-11C for one terrain/scenario/D condition.
+
+    If ``path_output`` is given, the world-coordinate path CSV is written
+    from the SAME solve (the CLI used to solve a second time).
+    """
     features = prepare_risk_model(
         terrain,
         wall_slope_threshold=wall_slope_threshold,
@@ -1858,6 +2044,11 @@ def run_experiment(
 
     cmdp_result = solver.solve_constrained_cmdp(risk_budget)
     path_result = extract_cmdp_path(solver, cmdp_result.policy)
+
+    if path_output is not None and path_result.reached_goal:
+        path_output = Path(path_output)
+        path_output.parent.mkdir(parents=True, exist_ok=True)
+        save_path_world(path_result, path_output)
 
     analysis = None
     if path_result.reached_goal:
@@ -1908,7 +2099,7 @@ def _parse_grid_state(value: str) -> GridState:
         ) from exc
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the refactored CMDP terrain pipeline."
     )
@@ -1971,24 +2162,19 @@ def main() -> None:
         output_path=args.output,
         backend=args.backend,
         device=args.device,
+        path_output=args.path_output,
     )
 
-    # The CLI intentionally reports only the final structured result.
-    # Detailed notebook debugging has been removed.
     print(json.dumps(result, indent=2))
 
-    # Recompute the path only if the caller wants the standard CSV output.
-    features = prepare_risk_model(terrain)
-    solver = CMDPSolver(
-        terrain,
-        features.weighted_risk_grid,
-        args.start,
-        args.goal,
-    )
-    cmdp_result = solver.solve_constrained_cmdp(args.risk_budget)
-    path_result = extract_cmdp_path(solver, cmdp_result.policy)
-    save_path_world(path_result, args.path_output)
+    # A CMDP that cannot reach the goal is a valid experimental outcome, not
+    # a crash: cmdp_result.json is written (reached_goal = false) and no
+    # path CSV is produced. Exit code 2 tells the runner "no path".
+    if not result["reached_goal"]:
+        print("CMDP did not reach the goal; no path CSV written.")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

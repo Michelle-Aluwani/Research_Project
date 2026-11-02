@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_1",
+  "scenario_id": "mud_01",
+  "risk_budget": 6.0,
+  "seed": 8,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\mud_01\\D6\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": false,
+  "fall_time": null,
+  "fall_reason": null,
+  "timed_out": false,
+  "simulation_time": 150.5874999999452,
+  "final_position": [
+    32.61025304519218,
+    -36.752760116564055,
+    0.7813242531123399
+  ],
+  "goal_position": [
+    33.108829,
+    -35.989384,
+    0.16827067791001596
+  ],
+  "distance_from_goal": 0.9117681054154856,
+  "waypoints_total": 127,
+  "waypoints_reached": 126,
+  "max_abs_pitch_deg": 9.771391951064892,
+  "max_abs_roll_deg": 6.193978308413708,
+  "terrain_time_s": {
+    "rock": 150.59166666661187,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Y",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\mud_01\\D6\\seed_008\\pybullet_execution.csv"
+}

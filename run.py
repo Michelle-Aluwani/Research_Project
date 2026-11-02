@@ -1,25 +1,157 @@
-import numpy as np
-import random
-import pybullet as p
-import pybullet_data
+import argparse
+import bisect
 import csv
 import json
 import math
+import random
+import sys
 import time
 from pathlib import Path
 
-
-# ============================================================
-# CMDP PATH -> PHYSICAL PYBULLET EXECUTION
-# ============================================================
+import numpy as np
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-TERRAIN_OBJ = SCRIPT_DIR / "newterrain.obj"
-CMDP_PATH = SCRIPT_DIR / "cmdp_path_world.csv"
-TERRAIN_GRID_JSON = SCRIPT_DIR / "terrain_grid.json"
+# Shared, name-based OBJ reader (also detects Blender Y-up exports and
+# converts them to the Z-up frame used by the grid, planners and PyBullet).
+from cmdp_refactored import (
+    classify_obj_group,
+    group_faces_by_type,
+    read_obj_groups,
+)
 
-OUTPUT_CSV = SCRIPT_DIR / "pybullet_execution.csv"
+
+# ============================================================
+# CMDP / BASELINE PATH -> PHYSICAL PYBULLET EXECUTION
+# ============================================================
+#
+# Command line (as called by experiment_runner.py / baseline_runner.py):
+#
+#   python run.py --terrain-dir <terrain_dir> --cmdp-path <path.csv>
+#                 --scenario-id <id> --risk-budget <D> --seed <n>
+#                 --output-dir <dir> [--headless]
+#
+# --headless uses PyBullet DIRECT mode (no window, no waiting at the end).
+# A robot fall is a valid RESULT: it is recorded and the exit code is 0.
+
+parser = argparse.ArgumentParser(
+    description="Execute a planned path in PyBullet (one Monte Carlo trial)."
+)
+parser.add_argument("--terrain-dir", type=Path, required=True)
+parser.add_argument("--cmdp-path", type=Path, required=True)
+parser.add_argument("--scenario-id", default="manual")
+parser.add_argument("--risk-budget", type=float, default=0.0)
+parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--output-dir", type=Path, default=None)
+parser.add_argument("--terrain-obj", type=Path, default=None,
+                    help="Override the terrain OBJ (default: the single "
+                         ".obj in --terrain-dir).")
+parser.add_argument("--headless", action="store_true")
+parser.add_argument("--tracking-mode", choices=["original", "segment", "corner_safe", "corner_fix", "waypoint_follow"], default="waypoint_follow",
+                    help="original=waypoints; segment=projection; corner_safe=monotonic local route progress and slow turns")
+parser.add_argument("--turn-method", choices=["original", "differential"], default="differential",
+                    help="differential uses opposite-direction strides at large heading errors")
+parser.add_argument("--turn-sign", type=int, choices=[-1, 1], default=1,
+                    help="Reverse differential turning direction if physical yaw response is reversed")
+parser.add_argument("--steering-test", choices=["auto", "positive", "negative", "zero"], default="auto",
+                    help="Optional fixed-command actuator test; use auto for path tracking")
+parser.add_argument("--gait-mode", choices=["scaled", "decoupled"], default="decoupled",
+                    help="scaled=old behaviour (stride_speed also shrinks the turn term); "
+                         "decoupled=forward drive is gated by heading error, turn authority is NOT reduced")
+parser.add_argument("--min-forward", type=float, default=0.5,
+                    help="decoupled gait: forward drive kept at 100+ deg heading error (0=pure pivot)")
+parser.add_argument("--turn-gain", type=float, default=1.0,
+                    help="decoupled gait: multiplier on the differential turn swing (log showed gain 1 gives ~0-3 deg/s)")
+parser.add_argument("--recover-min-forward", type=float, default=0.0,
+                    help="forward drive while recovering with >60 deg heading error (0 = stand and rotate)")
+parser.add_argument("--test-forward", type=float, default=1.0,
+                    help="with --steering-test in corner_fix: fixed forward drive (1=walk, 0=pure pivot)")
+parser.add_argument("--stall-seconds", type=float, default=15.0,
+                    help="report [STALL] if steering stays saturated this long without heading improving")
+parser.add_argument("--hip-gain", type=float, default=0.0,
+                    help="HIP-ABDUCTION STEERING: hip angle (rad) at |turn|=1; front legs +, rear legs - (yaw splay). 0=off")
+parser.add_argument("--hip-sign", type=int, choices=[-1, 1], default=1,
+                    help="flip hip steering direction if the yaw response is reversed (check with --steering-test)")
+parser.add_argument("--pivot-enter", type=float, default=25.0, help="stop walking and rotate in place above this heading error (deg)")
+parser.add_argument("--pivot-exit", type=float, default=8.0, help="resume walking below this heading error (deg)")
+parser.add_argument("--pivot-steer", type=float, default=0.6, help="steering used while rotating in place")
+parser.add_argument("--pivot-max", type=float, default=40.0, help="max seconds of one rotate-in-place burst (23 bursts / 321 s of pivoting in the last run did not fall)")
+parser.add_argument("--walk-burst", type=float, default=1.5, help="seconds of forced walking after a pivot burst")
+parser.add_argument("--no-pivot", action="store_true", help="disable stop-and-rotate")
+parser.add_argument("--goal-stop-radius", type=float, default=1.5, help="stop the run if the robot has passed the goal and is within this distance but not within --goal-radius (m)")
+parser.add_argument("--stuck-seconds", type=float, default=40.0, help="declare STUCK if the robot stays within --stuck-radius for this long with no waypoint/heading progress")
+parser.add_argument("--stuck-radius", type=float, default=1.0, help="movement (m) below which the robot counts as not moving")
+parser.add_argument("--max-escapes", type=int, default=2, help="back-up attempts after STUCK before the run is stopped")
+parser.add_argument("--reverse-deg", type=float, default=0.0, help="OPT-IN, NOT RECOMMENDED: the test showed the reverse stride does not move the robot backwards (0=off)")
+parser.add_argument("--reverse-speed", type=float, default=0.6, help="backward stride when reversing")
+parser.add_argument("--wall-stop-seconds", type=float, default=15.0, help="after the robot has touched a WALL, STOP the run if it moved less than --wall-stop-radius in this many seconds (0 = disabled)")
+parser.add_argument("--wall-stop-radius", type=float, default=0.75, help="movement (m) over --wall-stop-seconds below which a robot touching the wall counts as stuck")
+parser.add_argument("--no-wall-backup", action="store_true", help="disable the automatic 6 s back-up after the robot first touches a wall (the last two runs climbed the wall and fell)")
+parser.add_argument("--wp-radius", type=float, default=0.6, help="waypoint counts as reached within this distance (m)")
+parser.add_argument("--pass-radius", type=float, default=1.5,
+                    help="waypoint also counts as reached if the robot has passed it AND is within this distance (m)")
+parser.add_argument("--chord", type=float, default=4.0,
+                    help="aim this far (m) along the route past the next waypoint; smooths short zigzags into a straight walk")
+parser.add_argument("--dev-threshold", type=float, default=0.85, help="log a DEVIATION when farther than this from the route (m)")
+parser.add_argument("--max-steer", type=float, default=0.5, help="waypoint_follow: steering limit (large turn commands made the robot fall)")
+parser.add_argument("--goal-radius", type=float, default=0.3, help="waypoint_follow: finish when within this distance of the goal (m); 0.3 = the original WAYPOINT_TOLERANCE used for reached_goal")
+parser.add_argument("--recover-gate", type=float, default=0.85,
+                    help="local route error (m) above which RECOVERY targeting is used")
+parser.add_argument("--progress-gate", type=float, default=1.6,
+                    help="local route error (m) below which route progress may still advance")
+parser.add_argument("--no-corner-preslow", action="store_true",
+                    help="disable slowing down BEFORE a sharp route corner")
+args = parser.parse_args()
+
+HEADLESS = bool(args.headless)
+
+import pybullet as p  # noqa: E402
+import pybullet_data  # noqa: E402
+
+TERRAIN_DIR = args.terrain_dir.resolve()
+CMDP_PATH = args.cmdp_path.resolve()
+TERRAIN_GRID_JSON = TERRAIN_DIR / "terrain_grid.json"
+
+OUTPUT_DIR = (
+    args.output_dir.resolve()
+    if args.output_dir is not None
+    else TERRAIN_DIR / "run_output"
+)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+OUTPUT_CSV = OUTPUT_DIR / "pybullet_execution.csv"
+STUMBLE_CSV = OUTPUT_DIR / "stumble_log.csv"
+RESULT_JSON = OUTPUT_DIR / (
+    f"result_{args.scenario_id}_D{args.risk_budget:g}_"
+    f"seed{args.seed:03d}.json"
+)
+
+
+def find_terrain_obj(terrain_dir):
+    """The single source OBJ in the terrain folder (newterrain_N.obj, ...)."""
+    candidates = [
+        q for q in sorted(terrain_dir.glob("*.obj"))
+        if not q.name.startswith("pybullet_")
+        and not q.stem.endswith("_zup")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    preferred = [q for q in candidates if q.name.startswith("newterrain")]
+    if len(preferred) == 1:
+        return preferred[0]
+    raise FileNotFoundError(
+        f"Expected exactly one source .obj in {terrain_dir}, "
+        f"found {[q.name for q in candidates]}"
+    )
+
+
+TERRAIN_OBJ = (
+    args.terrain_obj.resolve()
+    if args.terrain_obj is not None
+    else find_terrain_obj(TERRAIN_DIR)
+)
 
 
 # ============================================================
@@ -135,8 +267,9 @@ STUMBLE_PUSH_TORQUE = 6.0    # N*m
 SLIP_PUSH_FORCE = 70.0       # N
 SLIP_PUSH_TORQUE = 18.0      # N*m
 
-RNG_SEED = 42
+RNG_SEED = int(args.seed)
 random.seed(RNG_SEED)
+np.random.seed(RNG_SEED)
 
 
 # ============================================================
@@ -386,9 +519,8 @@ for x in range(GRID_WIDTH):
 
 if len(water_cells) == 0:
 
-    raise ValueError(
-        "No water cells found in terrain_grid.json."
-    )
+    # Some terrains have no water. Mud is then "dry" everywhere.
+    print("No water cells in this terrain (mud will be treated as dry).")
 
 
 # ============================================================
@@ -496,7 +628,10 @@ for _start in _mud_cell_distance:
     _patch_max_dist = max(_patch_max_dist, 1e-6)
 
     for _c in _patch:
-        MUD_RATIO_GRID[_c] = _mud_cell_distance[_c] / _patch_max_dist
+        if math.isfinite(_patch_max_dist):
+            MUD_RATIO_GRID[_c] = _mud_cell_distance[_c] / _patch_max_dist
+        else:
+            MUD_RATIO_GRID[_c] = 1.0   # no water at all: dry mud
 
     mud_patch_count += 1
 
@@ -603,279 +738,41 @@ def current_terrain_properties(x, y):
 
 
 # ============================================================
-# OBJ GROUP PARSER
+# OBJ GROUPS (by object name, Z-up)
 # ============================================================
-
-def load_obj_groups(obj_path):
-
-    vertices = []
-
-    groups = {}
-
-    current_group = "Rock"
-
-    with open(
-        obj_path,
-        "r",
-        encoding="utf-8",
-        errors="ignore"
-    ) as f:
-
-        for line in f:
-
-            line = line.strip()
-
-            if not line:
-                continue
-
-            parts = line.split()
-
-            if not parts:
-                continue
-
-            # ------------------------------------------------
-            # Vertex
-            # ------------------------------------------------
-
-            if parts[0] == "v":
-
-                vertices.append(
-                    (
-                        float(parts[1]),
-                        float(parts[2]),
-                        float(parts[3])
-                    )
-                )
-
-            # ------------------------------------------------
-            # Object/group
-            # ------------------------------------------------
-
-            elif parts[0] in ("o", "g"):
-
-                if len(parts) >= 2:
-
-                    current_group = parts[1]
-
-            # ------------------------------------------------
-            # Face
-            # ------------------------------------------------
-
-            elif parts[0] == "f":
-
-                if current_group not in groups:
-
-                    groups[current_group] = []
-
-                face = []
-
-                for token in parts[1:]:
-
-                    vertex_index = (
-                        token.split("/")[0]
-                    )
-
-                    index = int(
-                        vertex_index
-                    )
-
-                    if index < 0:
-
-                        index = (
-                            len(vertices)
-                            +
-                            index
-                        )
-
-                    else:
-
-                        index = index - 1
-
-                    face.append(index)
-
-                if len(face) >= 3:
-
-                    # Triangulate polygons
-                    for i in range(
-                        1,
-                        len(face) - 1
-                    ):
-
-                        groups[
-                            current_group
-                        ].append(
-                            (
-                                face[0],
-                                face[i],
-                                face[i + 1]
-                            )
-                        )
-
-    return vertices, groups
-
 
 print()
 print("========================================")
 print("READING OBJ GROUPS")
 print("========================================")
 
-obj_vertices, obj_groups = (
-    load_obj_groups(
-        TERRAIN_OBJ
-    )
-)
+obj_vertices, obj_groups, obj_info = read_obj_groups(TERRAIN_OBJ)
 
-print(
-    f"Vertices: {len(obj_vertices)}"
-)
+print(f"OBJ: {TERRAIN_OBJ.name}")
+print(f"Up axis in file: {obj_info['up_axis_in_file']} "
+      f"(converted to Z-up: {obj_info['converted']})")
+print(f"Vertices: {len(obj_vertices)}")
 
 for name, faces in obj_groups.items():
+    print(f"{name}: {len(faces)} triangles "
+          f"[{classify_obj_group(name) or 'ignored'}]")
 
-    print(
-        f"{name}: {len(faces)} triangles"
-    )
+_faces_by_type = group_faces_by_type(obj_groups)
 
+rock_faces = _faces_by_type.get("rock")
+mud_faces = _faces_by_type.get("mud")
+water_faces = _faces_by_type.get("water")
+wall_faces = _faces_by_type.get("wall")
 
-# ============================================================
-# FIND ALL TERRAIN GROUPS
-# ============================================================
-
-def find_groups(
-    group_names,
-    keyword
-):
-
-    keyword = keyword.lower()
-
-    matches = []
-
-    for name in group_names:
-
-        if keyword in name.lower():
-
-            matches.append(name)
-
-    return matches
-
-
-rock_groups = find_groups(
-    obj_groups.keys(),
-    "rock"
-)
-
-mud_groups = find_groups(
-    obj_groups.keys(),
-    "mud"
-)
-
-water_groups = find_groups(
-    obj_groups.keys(),
-    "water"
-)
-
-
-# ------------------------------------------------------------
-# The OBJ currently contains:
-#
-# terrain_rock
-# mude_1
-# mud_2
-# water_1
-# water_2
-# water_3
-#
-# "mude_1" is deliberately matched below because its name
-# contains "mud" in the actual OBJ output you showed.
-# ------------------------------------------------------------
-
-if len(rock_groups) == 0:
-
-    raise ValueError(
-        "Could not find Rock groups in OBJ."
-    )
-
-if len(mud_groups) == 0:
-
-    raise ValueError(
-        "Could not find Mud groups in OBJ."
-    )
-
-if len(water_groups) == 0:
-
-    raise ValueError(
-        "Could not find Water groups in OBJ."
-    )
-
-
-print()
-print("Terrain groups detected:")
-
-print(
-    "Rock:",
-    rock_groups
-)
-
-print(
-    "Mud:",
-    mud_groups
-)
-
-print(
-    "Water:",
-    water_groups
-)
-
-
-# ============================================================
-# COMBINE GROUPS
-# ============================================================
-
-def combine_groups(
-    groups,
-    group_names
-):
-
-    combined_faces = []
-
-    for name in group_names:
-
-        combined_faces.extend(
-            groups[name]
-        )
-
-    return combined_faces
-
-
-rock_faces = combine_groups(
-    obj_groups,
-    rock_groups
-)
-
-mud_faces = combine_groups(
-    obj_groups,
-    mud_groups
-)
-
-water_faces = combine_groups(
-    obj_groups,
-    water_groups
-)
-
+if rock_faces is None:
+    raise ValueError("Could not find Rock groups in OBJ (name: terrain_rock).")
 
 print()
 print("Combined terrain meshes:")
-
-print(
-    f"Rock:  {len(rock_faces)} triangles"
-)
-
-print(
-    f"Mud:   {len(mud_faces)} triangles"
-)
-
-print(
-    f"Water: {len(water_faces)} triangles"
-)
+print(f"Rock:  {len(rock_faces)} triangles")
+print(f"Mud:   {0 if mud_faces is None else len(mud_faces)} triangles")
+print(f"Water: {0 if water_faces is None else len(water_faces)} triangles")
+print(f"Wall:  {0 if wall_faces is None else len(wall_faces)} triangles")
 
 
 # ============================================================
@@ -888,31 +785,12 @@ def write_collision_obj(
     faces
 ):
 
-    # Find only vertices actually used by this terrain type.
+    faces = np.asarray(faces, dtype=np.int64)
 
-    used_vertices = set()
+    used, inverse = np.unique(faces.reshape(-1), return_inverse=True)
 
-    for face in faces:
-
-        used_vertices.update(
-            face
-        )
-
-    old_to_new = {}
-
-    mesh_vertices = []
-
-    for old_index in sorted(
-        used_vertices
-    ):
-
-        old_to_new[old_index] = (
-            len(mesh_vertices)
-        )
-
-        mesh_vertices.append(
-            vertices[old_index]
-        )
+    mesh_vertices = vertices[used]
+    new_faces = inverse.reshape(-1, 3) + 1
 
     with open(
         output_path,
@@ -920,60 +798,61 @@ def write_collision_obj(
         encoding="utf-8"
     ) as f:
 
+        f.write("# PyBullet terrain collision mesh\n")
+
         f.write(
-            "# PyBullet terrain collision mesh\n"
+            "\n".join(
+                f"v {v[0]:.9f} {v[1]:.9f} {v[2]:.9f}"
+                for v in mesh_vertices
+            )
         )
+        f.write("\n")
 
-        for vertex in mesh_vertices:
-
-            f.write(
-                f"v {vertex[0]:.9f} "
-                f"{vertex[1]:.9f} "
-                f"{vertex[2]:.9f}\n"
+        f.write(
+            "\n".join(
+                f"f {a} {b} {c}" for a, b, c in new_faces
             )
-
-        for face in faces:
-
-            a = (
-                old_to_new[face[0]]
-                + 1
-            )
-
-            b = (
-                old_to_new[face[1]]
-                + 1
-            )
-
-            c = (
-                old_to_new[face[2]]
-                + 1
-            )
-
-            f.write(
-                f"f {a} {b} {c}\n"
-            )
+        )
+        f.write("\n")
 
     return len(mesh_vertices)
 
 
+def write_zup_visual_obj(src, dst):
+    """Copy of the OBJ with vertices/normals rotated Y-up -> Z-up
+    ((x, y, z) -> (x, -z, y)), for the GUI visual only."""
+
+    with open(src, "r", encoding="utf-8", errors="ignore") as fin, \
+            open(dst, "w", encoding="utf-8") as fout:
+
+        for line in fin:
+
+            if line.startswith("v ") or line.startswith("vn "):
+
+                parts = line.split()
+                x, y, z = (float(parts[1]), float(parts[2]), float(parts[3]))
+                fout.write(f"{parts[0]} {x:.9f} {-z:.9f} {y:.9f}\n")
+
+            else:
+
+                fout.write(line)
+
+    mtl = Path(src).with_suffix(".mtl")
+
+    if mtl.is_file():
+
+        (Path(dst).parent / mtl.name).write_bytes(mtl.read_bytes())
+
+
 # ============================================================
-# PYBULLET COLLISION OBJ FILES
+# PYBULLET COLLISION OBJ FILES  (per run, in the output folder, so
+# parallel jobs never overwrite each other's files)
 # ============================================================
 
-ROCK_COLLISION_OBJ = (
-    SCRIPT_DIR /
-    "pybullet_rock_collision.obj"
-)
-
-MUD_COLLISION_OBJ = (
-    SCRIPT_DIR /
-    "pybullet_mud_collision.obj"
-)
-
-WATER_COLLISION_OBJ = (
-    SCRIPT_DIR /
-    "pybullet_water_collision.obj"
-)
+ROCK_COLLISION_OBJ = OUTPUT_DIR / "pybullet_rock_collision.obj"
+MUD_COLLISION_OBJ = OUTPUT_DIR / "pybullet_mud_collision.obj"
+WATER_COLLISION_OBJ = OUTPUT_DIR / "pybullet_water_collision.obj"
+WALL_COLLISION_OBJ = OUTPUT_DIR / "pybullet_wall_collision.obj"
 
 
 # ============================================================
@@ -986,7 +865,7 @@ print("STARTING PYBULLET")
 print("========================================")
 
 p.connect(
-    p.GUI
+    p.DIRECT if HEADLESS else p.GUI
 )
 
 p.setAdditionalSearchPath(
@@ -1019,17 +898,26 @@ p.setPhysicsEngineParameter(
 print()
 print("Loading terrain visual...")
 
-terrain_visual = p.createVisualShape(
-    shapeType=p.GEOM_MESH,
-    fileName=str(TERRAIN_OBJ),
-    meshScale=[1, 1, 1]
-)
+if not HEADLESS:
 
-terrain_visual_id = p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=terrain_visual,
-    basePosition=[0, 0, 0]
-)
+    _visual_obj = TERRAIN_OBJ
+
+    if obj_info["converted"]:
+
+        _visual_obj = OUTPUT_DIR / "terrain_visual_zup.obj"
+        write_zup_visual_obj(TERRAIN_OBJ, _visual_obj)
+
+    terrain_visual = p.createVisualShape(
+        shapeType=p.GEOM_MESH,
+        fileName=str(_visual_obj),
+        meshScale=[1, 1, 1]
+    )
+
+    terrain_visual_id = p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=terrain_visual,
+        basePosition=[0, 0, 0]
+    )
 
 
 # ============================================================
@@ -1042,45 +930,37 @@ print("CREATING COLLISION MESH FILES")
 print("========================================")
 
 
-rock_vertex_count = (
-    write_collision_obj(
-        ROCK_COLLISION_OBJ,
-        obj_vertices,
-        rock_faces
+if SMOOTH_ROCK_COLLISION:
+
+    # The raw rock mesh is not used for collision when the smoothed
+    # surface is on (it used to be created and then switched off).
+    rock_vertex_count = 0
+
+else:
+
+    rock_vertex_count = write_collision_obj(
+        ROCK_COLLISION_OBJ, obj_vertices, rock_faces
     )
-)
 
 mud_vertex_count = (
-    write_collision_obj(
-        MUD_COLLISION_OBJ,
-        obj_vertices,
-        mud_faces
-    )
+    0 if mud_faces is None
+    else write_collision_obj(MUD_COLLISION_OBJ, obj_vertices, mud_faces)
 )
 
 water_vertex_count = (
-    write_collision_obj(
-        WATER_COLLISION_OBJ,
-        obj_vertices,
-        water_faces
-    )
+    0 if water_faces is None
+    else write_collision_obj(WATER_COLLISION_OBJ, obj_vertices, water_faces)
 )
 
-
-print(
-    f"Rock collision vertices: "
-    f"{rock_vertex_count}"
+wall_vertex_count = (
+    0 if wall_faces is None
+    else write_collision_obj(WALL_COLLISION_OBJ, obj_vertices, wall_faces)
 )
 
-print(
-    f"Mud collision vertices: "
-    f"{mud_vertex_count}"
-)
-
-print(
-    f"Water collision vertices: "
-    f"{water_vertex_count}"
-)
+print(f"Rock collision vertices: {rock_vertex_count}")
+print(f"Mud collision vertices: {mud_vertex_count}")
+print(f"Water collision vertices: {water_vertex_count}")
+print(f"Wall collision vertices: {wall_vertex_count}")
 
 
 # ============================================================
@@ -1095,18 +975,23 @@ print("Creating terrain collision bodies...")
 # ROCK
 # ------------------------------------------------------------
 
-rock_collision = p.createCollisionShape(
-    shapeType=p.GEOM_MESH,
-    fileName=str(ROCK_COLLISION_OBJ),
-    meshScale=[1, 1, 1],
-    flags=p.GEOM_FORCE_CONCAVE_TRIMESH
-)
+rock_collision = None
+rock_body = None
 
-rock_body = p.createMultiBody(
-    baseMass=0,
-    baseCollisionShapeIndex=rock_collision,
-    basePosition=[0, 0, 0]
-)
+if not SMOOTH_ROCK_COLLISION:
+
+    rock_collision = p.createCollisionShape(
+        shapeType=p.GEOM_MESH,
+        fileName=str(ROCK_COLLISION_OBJ),
+        meshScale=[1, 1, 1],
+        flags=p.GEOM_FORCE_CONCAVE_TRIMESH
+    )
+
+    rock_body = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=rock_collision,
+        basePosition=[0, 0, 0]
+    )
 
 if SMOOTH_ROCK_COLLISION:
 
@@ -1140,9 +1025,10 @@ if SMOOTH_ROCK_COLLISION:
     # continuous - no lip, no hole.
     MUD_WATER_CLEARANCE = 0.05  # m
     _hg_rock = _hg.copy()
-    _hg_rock[_tg != 0] -= MUD_WATER_CLEARANCE
+    # Only mud (1) / water (2) cells are dipped; wall cells (3) are not.
+    _hg_rock[np.isin(_tg, (1, 2))] -= MUD_WATER_CLEARANCE
 
-    _smooth_obj = Path(ROCK_COLLISION_OBJ).parent / "pybullet_rock_smooth_collision.obj"
+    _smooth_obj = OUTPUT_DIR / "pybullet_rock_smooth_collision.obj"
 
     with open(_smooth_obj, "w") as _f:
         for _i in range(_nx):
@@ -1160,9 +1046,7 @@ if SMOOTH_ROCK_COLLISION:
                 _d = _i * _ny + _j + 2
                 _f.write(f"f {_a} {_b} {_c}\nf {_a} {_c} {_d}\n")
 
-    # turn off the raw rock mesh and use the smooth one instead
-    p.setCollisionFilterGroupMask(rock_body, -1, 0, 0)
-
+    # use the smooth surface as the rock collision
     rock_collision = p.createCollisionShape(
         shapeType=p.GEOM_MESH,
         fileName=str(_smooth_obj),
@@ -1183,36 +1067,67 @@ if SMOOTH_ROCK_COLLISION:
 # MUD
 # ------------------------------------------------------------
 
-mud_collision = p.createCollisionShape(
-    shapeType=p.GEOM_MESH,
-    fileName=str(MUD_COLLISION_OBJ),
-    meshScale=[1, 1, 1],
-    flags=p.GEOM_FORCE_CONCAVE_TRIMESH
-)
+mud_body = None
 
-mud_body = p.createMultiBody(
-    baseMass=0,
-    baseCollisionShapeIndex=mud_collision,
-    basePosition=[0, 0, 0]
-)
+if mud_faces is not None:
+
+    mud_collision = p.createCollisionShape(
+        shapeType=p.GEOM_MESH,
+        fileName=str(MUD_COLLISION_OBJ),
+        meshScale=[1, 1, 1],
+        flags=p.GEOM_FORCE_CONCAVE_TRIMESH
+    )
+
+    mud_body = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=mud_collision,
+        basePosition=[0, 0, 0]
+    )
 
 
 # ------------------------------------------------------------
 # WATER
 # ------------------------------------------------------------
 
-water_collision = p.createCollisionShape(
-    shapeType=p.GEOM_MESH,
-    fileName=str(WATER_COLLISION_OBJ),
-    meshScale=[1, 1, 1],
-    flags=p.GEOM_FORCE_CONCAVE_TRIMESH
-)
+water_body = None
 
-water_body = p.createMultiBody(
-    baseMass=0,
-    baseCollisionShapeIndex=water_collision,
-    basePosition=[0, 0, 0]
-)
+if water_faces is not None:
+
+    water_collision = p.createCollisionShape(
+        shapeType=p.GEOM_MESH,
+        fileName=str(WATER_COLLISION_OBJ),
+        meshScale=[1, 1, 1],
+        flags=p.GEOM_FORCE_CONCAVE_TRIMESH
+    )
+
+    water_body = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=water_collision,
+        basePosition=[0, 0, 0]
+    )
+
+
+# ------------------------------------------------------------
+# WALLS  (static collision, same construction as mud / water; the
+# grid and planners treat these cells as non-traversable)
+# ------------------------------------------------------------
+
+wall_body = None
+
+if wall_faces is not None:
+
+    wall_collision = p.createCollisionShape(
+        shapeType=p.GEOM_MESH,
+        fileName=str(WALL_COLLISION_OBJ),
+        meshScale=[1, 1, 1],
+        flags=p.GEOM_FORCE_CONCAVE_TRIMESH
+    )
+
+    wall_body = p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=wall_collision,
+        basePosition=[0, 0, 0]
+    )
 
 
 # ============================================================
@@ -1227,27 +1142,42 @@ p.changeDynamics(
     spinningFriction=0.01
 )
 
-p.changeDynamics(
-    mud_body,
-    -1,
-    lateralFriction=MUD_FRICTION_DRY,
-    rollingFriction=0.01,
-    spinningFriction=0.01
-)
+if mud_body is not None:
 
-p.changeDynamics(
-    water_body,
-    -1,
-    lateralFriction=WATER_FRICTION,
-    rollingFriction=0.001,
-    spinningFriction=0.001
-)
+    p.changeDynamics(
+        mud_body,
+        -1,
+        lateralFriction=MUD_FRICTION_DRY,
+        rollingFriction=0.01,
+        spinningFriction=0.01
+    )
+
+if water_body is not None:
+
+    p.changeDynamics(
+        water_body,
+        -1,
+        lateralFriction=WATER_FRICTION,
+        rollingFriction=0.001,
+        spinningFriction=0.001
+    )
+
+if wall_body is not None:
+
+    p.changeDynamics(
+        wall_body,
+        -1,
+        lateralFriction=ROCK_FRICTION,
+        rollingFriction=0.01,
+        spinningFriction=0.01
+    )
 
 
 print()
 print("Rock collision loaded.")
-print("Mud collision loaded.")
-print("Water collision loaded.")
+print(f"Mud collision loaded: {mud_body is not None}")
+print(f"Water collision loaded: {water_body is not None}")
+print(f"Wall collision loaded: {wall_body is not None}")
 
 
 # ============================================================
@@ -1259,7 +1189,7 @@ print("Drawing CMDP path...")
 
 
 for i in range(
-    len(waypoints) - 1
+    0 if HEADLESS else len(waypoints) - 1
 ):
 
     p.addUserDebugLine(
@@ -1274,34 +1204,38 @@ for i in range(
 # START MARKER
 # ============================================================
 
-start_marker_visual = p.createVisualShape(
-    p.GEOM_SPHERE,
-    radius=0.25,
-    rgbaColor=[1, 0, 0, 1]
-)
+if not HEADLESS:
 
-p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=start_marker_visual,
-    basePosition=START
-)
+    start_marker_visual = p.createVisualShape(
+        p.GEOM_SPHERE,
+        radius=0.25,
+        rgbaColor=[1, 0, 0, 1]
+    )
+
+    p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=start_marker_visual,
+        basePosition=START
+    )
 
 
 # ============================================================
 # GOAL MARKER
 # ============================================================
 
-goal_marker_visual = p.createVisualShape(
-    p.GEOM_SPHERE,
-    radius=0.30,
-    rgbaColor=[0, 1, 0, 1]
-)
+if not HEADLESS:
 
-p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=goal_marker_visual,
-    basePosition=GOAL
-)
+    goal_marker_visual = p.createVisualShape(
+        p.GEOM_SPHERE,
+        radius=0.30,
+        rgbaColor=[0, 1, 0, 1]
+    )
+
+    p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=goal_marker_visual,
+        basePosition=GOAL
+    )
 
 
 # ============================================================
@@ -1463,10 +1397,10 @@ UPPER0 = -0.67
 LOWER0 = 1.25
 
 
-def leg_angles(extension, swing=0.0, lift=0.0):
+def leg_angles(extension, swing=0.0, lift=0.0, hip=0.0):
     """(hip, upper, lower) for one leg. extension>0 lengthens the leg."""
     return (
-        0.0,
+        hip,
         UPPER0 - 0.15 * extension + swing,
         LOWER0 - 0.30 * extension + lift
     )
@@ -1511,7 +1445,7 @@ def set_motor_targets(targets, knee_targets=None):
 # turn>0 makes the LEFT legs' swing smaller and the RIGHT legs' larger,
 # which (for this backward-walking gait) yaws the body clockwise.
 
-def gait_targets(t, roll_deg, pitch_deg, turn=0.0, ramp=1.0):
+def gait_targets(t, roll_deg, pitch_deg, turn=0.0, ramp=1.0, turn_method="original", heading_error=0.0, stride_speed=1.0, decoupled=False, turn_gain=1.0, hip_turn=0.0):
 
     k = min(1.0, t / ramp)
 
@@ -1539,12 +1473,32 @@ def gait_targets(t, roll_deg, pitch_deg, turn=0.0, ramp=1.0):
         )
         extension = max(0.0, min(1.2, extension))
 
-        side_scale = (1.0 - turn) if left else (1.0 + turn)
-
-        swing = -GAIT_SWING * k * side_scale * math.sin(leg_phase[leg])
+        if decoupled:
+            # FIX 1 (heading control): common-mode forward drive and the
+            # differential turn term are separate.  stride_speed here is only
+            # the FORWARD gate; the turn term keeps full authority.
+            side = -1.0 if left else 1.0
+            stride = max(-2.5, min(2.5, stride_speed + side * turn * turn_gain))
+            swing = -GAIT_SWING * k * stride * math.sin(leg_phase[leg])
+        elif turn_method == "differential":
+            # For large heading errors, make the two sides step in OPPOSITE
+            # directions, instead of stopping one side and doubling the other.
+            # This is a diagnostic turning gait, NOT a guaranteed solution.
+            # Smoothly blend walking into a pivot over 15..60 degrees.
+            a = abs(math.degrees(heading_error))
+            pivot_fraction = max(0.0, min(1.0, (a - 15.0) / 45.0))
+            side = -1.0 if left else 1.0
+            # At full pivot: left/right strides have opposite signs.
+            # At zero pivot: original normal forward gait.
+            stride = (1.0 - pivot_fraction) * (1.0 + side * turn) + pivot_fraction * (side * turn)
+            swing = -GAIT_SWING * k * stride_speed * stride * math.sin(leg_phase[leg])
+        else:
+            side_scale = (1.0 - turn) if left else (1.0 + turn)
+            swing = -GAIT_SWING * k * stride_speed * side_scale * math.sin(leg_phase[leg])
         lift = -GAIT_LIFT * k * max(0.0, math.cos(leg_phase[leg]))
 
-        targets[leg] = leg_angles(extension, swing, lift)
+        hip = max(-0.5, min(0.5, hip_turn * (1.0 if front else -1.0)))
+        targets[leg] = leg_angles(extension, swing, lift, hip)
 
     return targets
 
@@ -1867,11 +1821,13 @@ def update_terrain_friction(
     # Apply friction
     # --------------------------------------------------------
 
-    p.changeDynamics(
-        body_id,
-        -1,
-        lateralFriction=friction
-    )
+    if body_id is not None:
+
+        p.changeDynamics(
+            body_id,
+            -1,
+            lateralFriction=friction
+        )
 
 
     # --------------------------------------------------------
@@ -1924,12 +1880,14 @@ def update_terrain_friction(
 # INITIAL CAMERA
 # ============================================================
 
-p.resetDebugVisualizerCamera(
-    cameraDistance=CAMERA_DISTANCE,
-    cameraYaw=0,
-    cameraPitch=CAMERA_PITCH,
-    cameraTargetPosition=START
-)
+if not HEADLESS:
+
+    p.resetDebugVisualizerCamera(
+        cameraDistance=CAMERA_DISTANCE,
+        cameraYaw=0,
+        cameraPitch=CAMERA_PITCH,
+        cameraTargetPosition=START
+    )
 
 
 # ============================================================
@@ -1977,6 +1935,87 @@ print("EXECUTING CMDP PATH")
 print("========================================")
 
 
+# DEBUG: cumulative distance along the original polyline (XY metres).
+path_s = [0.0]
+for _i in range(1, len(waypoints)):
+    path_s.append(path_s[-1] + math.hypot(
+        waypoints[_i][0] - waypoints[_i-1][0],
+        waypoints[_i][1] - waypoints[_i-1][1]))
+path_length = path_s[-1]
+tracking_progress = 0.0
+tracking_records = []
+recovering = False
+wf_index = 1
+reversing = False
+stuck_hist = []
+escape_until = 0.0
+escapes = 0
+stuck_stop = False
+goal_stop = False
+wall_stop = False
+wall_hist = []
+stop_reason = None
+pivot_h0 = None
+pivot_esc = 0.0
+last_far_adv = -10.0
+far_adv_count = 0
+pivoting = False
+pivot_start = 0.0
+walk_until = 0.0
+pivot_count = 0
+pivot_steps = 0
+dev_active = False
+dev_count = 0
+dev_max = 0.0
+dev_steps = 0
+sat_since = None
+sat_err0 = 0.0
+stall_reported = False
+recovery_count = 0
+sat_steps = 0
+first_exceed_t = None
+steer_steps = 0
+last_debug_target_angle = None
+last_debug_waypoint = 1
+max_path_error = 0.0
+sum_path_error = 0.0
+n_path_error = 0
+
+
+def project_on_path(x, y, min_s=0.0, max_s=None):
+    """Closest XY point on polyline within allowed arc-length interval."""
+    if max_s is None:
+        max_s = path_length
+    best = None
+    for j in range(len(waypoints)-1):
+        s0, s1 = path_s[j], path_s[j+1]
+        if s1 < min_s or s0 > max_s or s1 <= s0:
+            continue
+        ax, ay = waypoints[j][:2]
+        bx, by = waypoints[j+1][:2]
+        vx, vy = bx-ax, by-ay
+        t = max(0.0, min(1.0, ((x-ax)*vx + (y-ay)*vy) / (vx*vx+vy*vy)))
+        t = max(t, max(0.0, (min_s-s0)/(s1-s0)))
+        t = min(t, min(1.0, (max_s-s0)/(s1-s0)))
+        qx, qy = ax+t*vx, ay+t*vy
+        d = math.hypot(x-qx, y-qy)
+        if best is None or d < best[0]:
+            best = (d, s0+t*(s1-s0), qx, qy, j)
+    return best
+
+
+def point_at_s(s):
+    s = max(0.0, min(path_length, s))
+    j = max(0, min(len(waypoints)-2, bisect.bisect_right(path_s, s)-1))
+    length = path_s[j+1]-path_s[j]
+    t = (s-path_s[j])/length if length > 0 else 0.0
+    return (waypoints[j][0] + t*(waypoints[j+1][0]-waypoints[j][0]),
+            waypoints[j][1] + t*(waypoints[j+1][1]-waypoints[j][1]))
+
+print(f"TRACKING DIAGNOSTIC: mode={args.tracking_mode}, steering={args.steering_test}, path_length={path_length:.2f} m")
+if args.tracking_mode == "corner_safe":
+    print("[CORNER SAFE] local monotonic route progress; no pivot; adaptive walking stride")
+
 current_waypoint = 1
 
 simulation_time = 0.0
@@ -1997,6 +2036,12 @@ fall_reason = None
 max_pitch_seen = 0.0
 
 max_roll_seen = 0.0
+
+touched_wall = False
+
+wall_contact_time = None
+
+step_counter = 0
 
 
 terrain_time = {
@@ -2162,95 +2207,241 @@ while (
         break
 
 
-    # --------------------------------------------------------
-    # TARGET WAYPOINT
-    # --------------------------------------------------------
+    # Full-route distance is a DIAGNOSTIC ONLY (not used for control).
+    global_nearest = project_on_path(robot_x, robot_y)
+    path_error = global_nearest[0]
+    max_path_error = max(max_path_error, path_error)
+    sum_path_error += path_error
+    n_path_error += 1
+    prev_waypoint = current_waypoint
 
-    target_x, target_y, target_z = (
-        waypoints[
-            current_waypoint
-        ]
-    )
+    if args.tracking_mode == "original":
+        # --------------------------------------------------------
+        # TARGET WAYPOINT
+        # --------------------------------------------------------
 
-
-    dx = (
-        target_x -
-        robot_x
-    )
-
-    dy = (
-        target_y -
-        robot_y
-    )
-
-
-    horizontal_distance = math.sqrt(
-        dx * dx +
-        dy * dy
-    )
-
-
-    # --------------------------------------------------------
-    # WAYPOINT REACHED
-    # --------------------------------------------------------
-
-    if (
-        horizontal_distance <=
-        WAYPOINT_TOLERANCE
-    ):
-
-        current_waypoint += 1
-
-        print(
-            f"Reached waypoint "
-            f"{current_waypoint - 1} / "
-            f"{len(waypoints) - 1}"
+        target_x, target_y, target_z = (
+            waypoints[
+                current_waypoint
+            ]
         )
 
-        continue
+
+        dx = (
+            target_x -
+            robot_x
+        )
+
+        dy = (
+            target_y -
+            robot_y
+        )
 
 
-    # Skip waypoints already passed (a later waypoint is closer)
-    while current_waypoint + 1 < len(waypoints):
+        horizontal_distance = math.sqrt(
+            dx * dx +
+            dy * dy
+        )
 
-        nx, ny, _ = waypoints[current_waypoint + 1]
 
-        if math.hypot(nx - robot_x, ny - robot_y) < horizontal_distance:
+        # --------------------------------------------------------
+        # WAYPOINT REACHED
+        # --------------------------------------------------------
+
+        if (
+            horizontal_distance <=
+            WAYPOINT_TOLERANCE
+        ):
 
             current_waypoint += 1
-            target_x, target_y, target_z = waypoints[current_waypoint]
-            horizontal_distance = math.hypot(
-                target_x - robot_x, target_y - robot_y
+
+            print(
+                f"Reached waypoint "
+                f"{current_waypoint - 1} / "
+                f"{len(waypoints) - 1}"
             )
 
+            continue
+
+
+        # Skip waypoints already passed (a later waypoint is closer)
+        while current_waypoint + 1 < len(waypoints):
+
+            nx, ny, _ = waypoints[current_waypoint + 1]
+
+            if math.hypot(nx - robot_x, ny - robot_y) < horizontal_distance:
+
+                current_waypoint += 1
+                target_x, target_y, target_z = waypoints[current_waypoint]
+                horizontal_distance = math.hypot(
+                    target_x - robot_x, target_y - robot_y
+                )
+
+            else:
+
+                break
+
+
+        # --------------------------------------------------------
+        # DESIRED HEADING (pure-pursuit style lookahead point)
+        # --------------------------------------------------------
+
+        look = current_waypoint
+
+        while (
+            look < len(waypoints) - 1
+            and math.hypot(
+                waypoints[look][0] - robot_x,
+                waypoints[look][1] - robot_y
+            ) < LOOKAHEAD_DISTANCE
+        ):
+            look += 1
+
+        look_x, look_y, _ = waypoints[look]
+
+        desired_yaw = math.atan2(
+            look_y - robot_y,
+            look_x - robot_x
+        )
+
+        target_s = path_s[min(look, len(path_s)-1)]
+        local_nearest = global_nearest
+    elif args.tracking_mode == "waypoint_follow":
+        # Sequential waypoint pursuit. The route is NEVER modified. If the
+        # robot deviates it is LOGGED, and it keeps heading for the NEXT
+        # waypoint instead of freezing. Waypoints advance one at a time.
+        _wx, _wy = waypoints[wf_index][:2]
+        _px, _py = waypoints[wf_index-1][:2]
+        _sx, _sy = _wx-_px, _wy-_py
+        _sl = math.hypot(_sx, _sy) or 1e-9
+        _d = math.hypot(robot_x-_wx, robot_y-_wy)
+        _along = ((robot_x-_wx)*_sx + (robot_y-_wy)*_sy) / _sl
+        if wf_index >= len(waypoints)-1:
+            if _d <= args.goal_radius:
+                current_waypoint = len(waypoints)
+                print(f"[TRACK] t={simulation_time:.1f}s GOAL reached within {args.goal_radius} m")
+                continue
+            elif _along > 0.0 and _d <= args.goal_stop_radius:
+                goal_stop = True
+                print(f"[GOAL] t={simulation_time:.1f}s passed the goal at {_d:.2f} m (needed {args.goal_radius} m): stopping run")
+                break
+        elif _d <= args.wp_radius or (_along > 0.0 and _d <= args.pass_radius):
+            wf_index += 1
+        elif _along > 0.0 and simulation_time - last_far_adv >= 1.0:
+            # Passed this waypoint but too far from it to count as reached (log showed the robot
+            # stuck aiming at a waypoint BEHIND it for 80 s). Log the deviation and move on to the next one.
+            wf_index += 1
+            last_far_adv = simulation_time
+            far_adv_count += 1
+            print(f"[DEVIATION] t={simulation_time:.1f}s passed waypoint {wf_index-1} at {_d:.2f} m; now heading for waypoint {wf_index}")
+        local_nearest = project_on_path(
+            robot_x, robot_y,
+            max(0.0, path_s[wf_index-1]-0.5), min(path_length, path_s[wf_index]+1.5))
+        if local_nearest is None:
+            local_nearest = global_nearest
+        tracking_progress = max(tracking_progress, path_s[wf_index-1])
+        # deviation logging (informational, never blocks progress)
+        if local_nearest[0] > args.dev_threshold:
+            dev_steps += 1
+            dev_max = max(dev_max, local_nearest[0])
+            if not dev_active:
+                dev_active = True
+                dev_count += 1
+                print(f"[DEVIATION] t={simulation_time:.1f}s {local_nearest[0]:.2f} m off route; heading for waypoint {wf_index}")
+        elif dev_active:
+            dev_active = False
+            print(f"[DEVIATION] t={simulation_time:.1f}s back within {args.dev_threshold} m of the route")
+        # chord smooths zigzags; shorter when off route (no switch to the waypoint itself: that made the
+        # target jump backwards by 66 deg in the last log)
+        target_s = min(path_length, path_s[wf_index] + (args.chord if local_nearest[0] <= 1.0 else 0.5))
+        look_x, look_y = point_at_s(target_s)
+        desired_yaw = math.atan2(look_y - robot_y, look_x - robot_x)
+        current_waypoint = wf_index
+    elif args.tracking_mode == "corner_fix":
+        # FIX 2 (path tracking) + FIX 3 (recovery).  Route is NEVER modified,
+        # never skipped: progress is monotonic and only searched in a
+        # local arc-length window ahead of the last progress.
+        local_nearest = project_on_path(
+            robot_x, robot_y,
+            max(0.0, tracking_progress - 0.25),
+            min(path_length, tracking_progress + 1.25))
+        if local_nearest is None:
+            local_nearest = global_nearest
+        if local_nearest[0] <= args.progress_gate:
+            tracking_progress = max(tracking_progress, local_nearest[1])
+        if local_nearest[0] > args.recover_gate:
+            # RECOVERY: aim at the closest point of the CURRENT local route
+            # section (rejoin), not a frozen lookahead that we can walk past.
+            if not recovering:
+                recovering = True
+                recovery_count += 1
+                print(f"[RECOVER] t={simulation_time:.1f}s enter: local_error={local_nearest[0]:.2f}m progress={tracking_progress:.2f}m")
+            target_s = min(path_length, local_nearest[1] + 0.25)
         else:
+            if recovering:
+                recovering = False
+                print(f"[RECOVER] t={simulation_time:.1f}s exit: local_error={local_nearest[0]:.2f}m")
+            target_s = min(path_length, tracking_progress + 0.65)
+        look_x, look_y = point_at_s(target_s)
+        desired_yaw = math.atan2(look_y - robot_y, look_x - robot_x)
+        current_waypoint = min(len(waypoints) - 1,
+                               max(1, bisect.bisect_right(path_s, tracking_progress)))
+        if tracking_progress >= path_length - WAYPOINT_TOLERANCE and \
+                math.hypot(robot_x-waypoints[-1][0], robot_y-waypoints[-1][1]) <= WAYPOINT_TOLERANCE:
+            current_waypoint = len(waypoints)
+            print("[TRACK] Final waypoint reached within tolerance")
+            continue
+    elif args.tracking_mode == "corner_safe":
+        # The route is unchanged. Keep monotonic arc-length progress so a
+        # missed 0.5-m waypoint cannot suddenly become a target BEHIND us.
+        # Search only the next 1.25 m: no global nearest-waypoint shortcuts.
+        local_nearest = project_on_path(
+            robot_x, robot_y,
+            max(0.0, tracking_progress - 0.25),
+            min(path_length, tracking_progress + 1.25))
+        if local_nearest is None:
+            local_nearest = global_nearest
+        # Only advance progress when physically close to the local route.
+        # When off-route, keep aiming for the next local segment, not the goal.
+        if local_nearest[0] <= 0.85:
+            tracking_progress = max(tracking_progress, local_nearest[1])
+        # Shorter lookahead on turns; smooth arc-length target does not
+        # jump backwards when the robot passes an individual waypoint.
+        corner_lookahead = 0.65
+        target_s = min(path_length, tracking_progress + corner_lookahead)
+        look_x, look_y = point_at_s(target_s)
+        desired_yaw = math.atan2(look_y - robot_y, look_x - robot_x)
+        current_waypoint = min(len(waypoints) - 1,
+                               max(1, bisect.bisect_right(path_s, tracking_progress)))
+        if tracking_progress >= path_length - WAYPOINT_TOLERANCE and \
+                math.hypot(robot_x-waypoints[-1][0], robot_y-waypoints[-1][1]) <= WAYPOINT_TOLERANCE:
+            current_waypoint = len(waypoints)
+            print("[TRACK] Final waypoint reached within tolerance")
+            continue
+    else:
+        # Search only a nearby section ahead of the last route progress.
+        # This prevents a robot far from the path from jumping to a distant
+        # (possibly geometrically nearby) portion of a winding route.
+        local_nearest = project_on_path(
+            robot_x, robot_y,
+            max(0.0, tracking_progress-1.0),
+            min(path_length, tracking_progress+3.0))
+        if local_nearest is None:
+            local_nearest = global_nearest
+        # Progress never goes backward. The route itself is NEVER modified.
+        tracking_progress = max(tracking_progress, local_nearest[1])
+        target_s = min(path_length, tracking_progress+LOOKAHEAD_DISTANCE)
+        look_x, look_y = point_at_s(target_s)
+        desired_yaw = math.atan2(look_y-robot_y, look_x-robot_x)
+        current_waypoint = min(len(waypoints)-1,
+                               max(1, bisect.bisect_right(path_s, tracking_progress)))
+        if tracking_progress >= path_length-WAYPOINT_TOLERANCE and \
+                math.hypot(robot_x-waypoints[-1][0], robot_y-waypoints[-1][1]) <= WAYPOINT_TOLERANCE:
+            current_waypoint = len(waypoints)
+            print("[TRACK] Final waypoint reached within tolerance")
+            continue
 
-            break
-
-
-    # --------------------------------------------------------
-    # DESIRED HEADING (pure-pursuit style lookahead point)
-    # --------------------------------------------------------
-
-    look = current_waypoint
-
-    while (
-        look < len(waypoints) - 1
-        and math.hypot(
-            waypoints[look][0] - robot_x,
-            waypoints[look][1] - robot_y
-        ) < LOOKAHEAD_DISTANCE
-    ):
-        look += 1
-
-    look_x, look_y, _ = waypoints[look]
-
-    desired_yaw = math.atan2(
-        look_y - robot_y,
-        look_x - robot_x
-    )
-
-
+    # Original heading computation follows, including BODY_YAW_OFFSET.
     # --------------------------------------------------------
     # CURRENT YAW (radians)
     # --------------------------------------------------------
@@ -2267,6 +2458,18 @@ while (
 
     yaw_rate = p.getBaseVelocity(robot_id)[1][2]
 
+    if args.tracking_mode == "waypoint_follow" and args.reverse_deg > 0 and args.steering_test == "auto":
+        _ea = abs(math.degrees(yaw_error))
+        if not reversing and _ea > args.reverse_deg:
+            reversing = True
+            print(f"[REVERSE] t={simulation_time:.1f}s target is {_ea:.0f} deg behind: walking backwards")
+        elif reversing and _ea < args.reverse_deg - 30.0:
+            reversing = False
+            print(f"[REVERSE] t={simulation_time:.1f}s forward again: heading error {_ea:.0f} deg")
+        if reversing:
+            # steer the REAR of the robot toward the target
+            yaw_error = yaw_error - math.copysign(math.pi, yaw_error)
+
 
     # --------------------------------------------------------
     # STEERING  (turn > 0 = turn left)
@@ -2281,16 +2484,175 @@ while (
     )
 
 
+    if args.tracking_mode == "waypoint_follow":
+        steering = max(-args.max_steer, min(args.max_steer, steering))
+    if args.steering_test == "positive":
+        steering = 0.5
+    elif args.steering_test == "negative":
+        steering = -0.5
+    elif args.steering_test == "zero":
+        steering = 0.0
+
+    # Diagnostics once per simulated second. No physics parameters changed.
+    if step_counter % 240 == 0:
+        actual_travel_yaw = (current_yaw - BODY_YAW_OFFSET + math.pi) % (2*math.pi) - math.pi
+        heading_jump = 0.0 if last_debug_target_angle is None else math.degrees(
+            (desired_yaw-last_debug_target_angle+math.pi) % (2*math.pi)-math.pi)
+        print(f"[TRACK] t={simulation_time:5.1f}s mode={args.tracking_mode} "
+              f"wp={current_waypoint:3d} look=({look_x:+.2f},{look_y:+.2f}) "
+              f"route_error={path_error:.2f}m local_error={local_nearest[0]:.2f}m "
+              f"heading_err={math.degrees(yaw_error):+.1f}deg "
+              f"target_change={heading_jump:+.1f}deg "
+              f"turn={steering:+.2f} method={args.turn_method} body_yaw={math.degrees(current_yaw):+.1f}deg "
+              f"travel_yaw={math.degrees(actual_travel_yaw):+.1f}deg "
+              f"yaw_rate={math.degrees(yaw_rate):+.1f}deg/s")
+        if abs(heading_jump) > 35:
+            print("[WARNING] Sudden desired-heading change: inspect waypoint/route geometry")
+        if current_waypoint-prev_waypoint > 1:
+            print(f"[WARNING] Waypoint jump: {prev_waypoint} -> {current_waypoint}")
+        last_debug_target_angle = desired_yaw
+        tracking_records.append({
+            "time_s": round(simulation_time, 3), "mode": args.tracking_mode,
+            "robot_x": robot_x, "robot_y": robot_y,
+            "waypoint": current_waypoint, "look_x": look_x, "look_y": look_y,
+            "target_s_m": target_s, "route_error_m": path_error,
+            "local_route_error_m": local_nearest[0],
+            "desired_travel_yaw_deg": math.degrees(desired_yaw),
+            "actual_travel_yaw_deg": math.degrees(actual_travel_yaw),
+            "heading_error_deg": math.degrees(yaw_error),
+            "target_change_deg": heading_jump, "steering": steering,
+            "yaw_rate_deg_s": math.degrees(yaw_rate),
+            "pitch_deg": pitch_deg, "roll_deg": roll_deg,
+            "progress_m": tracking_progress, "recovering": int(recovering),
+            "body_yaw_deg": math.degrees(current_yaw),
+        })
+
     # --------------------------------------------------------
     # GAIT
     # --------------------------------------------------------
 
+    # Slow down on sharp turns, but never enter the unsuccessful in-place
+    # pivot mode. Preserve the tested differential turning gait.
+    heading_abs = abs(math.degrees(yaw_error))
+    stride_speed = (max(0.45, 1.0 - 0.55 * (heading_abs - 15.0) / 45.0)
+                    if args.tracking_mode == "corner_safe" and heading_abs > 15.0
+                    else 1.0)
+    decoupled = (args.gait_mode == "decoupled" and args.tracking_mode in ("corner_fix", "waypoint_follow"))
+    if decoupled:
+        # Forward gate: full speed < 20 deg, ramps to --min-forward by 100 deg.
+        eff_err = heading_abs
+        if not args.no_corner_preslow:
+            # Look 1.5 m down the route: if the path bends sharply, slow
+            # down BEFORE the corner so the turn radius fits.
+            _ax, _ay = point_at_s(tracking_progress + 0.3)
+            _bx, _by = point_at_s(tracking_progress + 1.8)
+            _cx, _cy = point_at_s(tracking_progress + 3.0)
+            _h1 = math.atan2(_by - _ay, _bx - _ax)
+            _h2 = math.atan2(_cy - _by, _cx - _bx)
+            _bend = abs(math.degrees((_h2 - _h1 + math.pi) % (2*math.pi) - math.pi))
+            eff_err = max(eff_err, 1.5 * _bend)
+        stride_speed = max(args.min_forward,
+                           min(1.0, 1.0 - (eff_err - 20.0) / 80.0))
+        if args.tracking_mode == "waypoint_follow":
+            stride_speed = max(args.min_forward, min(1.0, 1.0 - (heading_abs - 30.0) / 90.0))
+        if args.tracking_mode == "waypoint_follow" and args.steering_test == "auto" and not args.no_pivot:
+            # Measured (pivot test): forward=0 + steering gives ~1.2 deg/s at 0.5 with almost no translation.
+            # So: stop, rotate toward the waypoint, then walk. Bursts are time-limited.
+            if not pivoting and heading_abs > args.pivot_enter and simulation_time >= walk_until:
+                pivoting = True; pivot_start = simulation_time; pivot_count += 1
+                print(f"[PIVOT] t={simulation_time:.1f}s stop and rotate: heading error {heading_abs:.0f} deg")
+            elif pivoting and (heading_abs < args.pivot_exit or simulation_time - pivot_start > args.pivot_max):
+                pivoting = False
+                walk_until = simulation_time + (args.walk_burst if heading_abs < 100.0 else 0.0)  # never walk while facing away
+                print(f"[PIVOT] t={simulation_time:.1f}s resume walking: heading error {heading_abs:.0f} deg")
+            if pivoting:
+                # escalate steering if 8 s of pivoting gained < 5 deg
+                if pivot_h0 is None or pivot_h0[0] < pivot_start:
+                    pivot_h0 = (simulation_time, heading_abs); pivot_esc = args.pivot_steer
+                elif simulation_time - pivot_h0[0] >= 8.0:
+                    if pivot_h0[1] - heading_abs < 5.0:
+                        pivot_esc = min(1.0, pivot_esc + 0.2)
+                        print(f"[PIVOT] t={simulation_time:.1f}s no rotation in 8 s, steering -> {pivot_esc:.1f}")
+                    pivot_h0 = (simulation_time, heading_abs)
+                stride_speed = 0.0
+                steering = math.copysign(pivot_esc, steering) if steering else 0.0
+                pivot_steps += 1
+        if args.tracking_mode == "waypoint_follow" and args.steering_test == "auto":
+            if reversing and not pivoting:
+                stride_speed = -args.reverse_speed
+            # WALL-STUCK detector: robot has touched the wall and is no longer making progress -> stop early
+            if args.wall_stop_seconds > 0 and touched_wall and step_counter % 240 == 0:
+                wall_hist.append((simulation_time, robot_x, robot_y))
+                while wall_hist and simulation_time - wall_hist[0][0] > args.wall_stop_seconds + 1.0:
+                    wall_hist.pop(0)
+                if simulation_time - wall_contact_time >= args.wall_stop_seconds and \
+                        simulation_time - wall_hist[0][0] >= args.wall_stop_seconds:
+                    _wm = math.hypot(robot_x - wall_hist[0][1], robot_y - wall_hist[0][2])
+                    if _wm < args.wall_stop_radius:
+                        wall_stop = True
+                        stop_reason = "wall_stuck"
+                        print(f"[WALL STOP] t={simulation_time:.1f}s touched the wall at {wall_contact_time:.1f}s and moved only "
+                              f"{_wm:.2f} m in {args.wall_stop_seconds:.0f} s: STOPPING run")
+                        break
+            # STUCK detector: sampled once per simulated second
+            if step_counter % 240 == 0:
+                stuck_hist.append((simulation_time, robot_x, robot_y, wf_index, heading_abs))
+                while stuck_hist and simulation_time - stuck_hist[0][0] > args.stuck_seconds + 1.0:
+                    stuck_hist.pop(0)
+                if simulation_time >= escape_until and len(stuck_hist) > 1 and \
+                        simulation_time - stuck_hist[0][0] >= args.stuck_seconds:
+                    _h0 = stuck_hist[0]
+                    _moved = math.hypot(robot_x - _h0[1], robot_y - _h0[2])
+                    if _moved < args.stuck_radius and wf_index == _h0[3] and (_h0[4] - heading_abs) < 10.0:
+                        escapes += 1
+                        stuck_hist.clear()
+                        if escapes > args.max_escapes:
+                            stuck_stop = True
+                            stop_reason = "stuck"
+                            print(f"[STUCK] t={simulation_time:.1f}s moved {_moved:.2f} m in {args.stuck_seconds:.0f} s with no waypoint or heading progress; "
+                                  f"{args.max_escapes} back-up attempts failed: STOPPING run")
+                            break
+                        escape_until = simulation_time + 6.0
+                        print(f"[STUCK] t={simulation_time:.1f}s moved {_moved:.2f} m in {args.stuck_seconds:.0f} s: backing up (attempt {escapes}/{args.max_escapes})")
+            if simulation_time < escape_until:
+                stride_speed = -0.8
+                steering = 0.0
+            if (not args.no_wall_backup) and touched_wall and wall_contact_time is not None \
+                    and simulation_time - wall_contact_time < 6.0:
+                stride_speed = -0.8        # wall touched: back away instead of pushing into / climbing it
+                steering = 0.0
+        if recovering and heading_abs > 60.0:
+            stride_speed = args.recover_min_forward   # stop walking away from the route
+        if args.steering_test != "auto":
+            stride_speed = args.test_forward
     motor_targets = gait_targets(
         gait_time,
         level_roll_deg,
         level_pitch_deg,
-        steering
+        steering * args.turn_sign if (args.turn_method == "differential" or decoupled) else steering,
+        turn_method=args.turn_method,
+        heading_error=yaw_error,
+        stride_speed=stride_speed,
+        decoupled=decoupled,
+        turn_gain=args.turn_gain,
+        hip_turn=(args.hip_sign * args.hip_gain * steering) if decoupled else 0.0
     )
+    # STALL detector: saturated steering with no improvement in heading error.
+    if abs(steering) >= 0.99:
+        if sat_since is None:
+            sat_since, sat_err0 = simulation_time, heading_abs
+        elif (simulation_time - sat_since > args.stall_seconds and not stall_reported
+              and heading_abs > sat_err0 - 10.0):
+            stall_reported = True
+            print(f"[STALL] t={simulation_time:.1f}s steering saturated {simulation_time-sat_since:.0f}s, "
+                  f"heading error {sat_err0:.0f} -> {heading_abs:.0f} deg: gait cannot turn at this setting")
+    else:
+        sat_since = None; stall_reported = False
+    steer_steps += 1
+    if abs(steering) >= 0.99:
+        sat_steps += 1
+    if first_exceed_t is None and local_nearest[0] > 0.85:
+        first_exceed_t = simulation_time
 
     set_motor_targets(motor_targets)
 
@@ -2316,21 +2678,37 @@ while (
 
     simulation_time += TIME_STEP
 
+    step_counter += 1
+
+    # Cheap wall-contact check every 0.05 s (physical wall collision proof).
+    if (
+        wall_body is not None
+        and not touched_wall
+        and step_counter % 12 == 0
+        and len(p.getContactPoints(bodyA=robot_id, bodyB=wall_body)) > 0
+    ):
+
+        touched_wall = True
+        wall_contact_time = simulation_time
+        print(f"[{simulation_time:6.1f}s] Robot touched a WALL.")
+
 
     # --------------------------------------------------------
     # CAMERA
     # --------------------------------------------------------
 
-    p.resetDebugVisualizerCamera(
-        cameraDistance=CAMERA_DISTANCE,
-        cameraYaw=0,
-        cameraPitch=CAMERA_PITCH,
-        cameraTargetPosition=[
-            robot_x,
-            robot_y,
-            robot_z
-        ]
-    )
+    if not HEADLESS:
+
+        p.resetDebugVisualizerCamera(
+            cameraDistance=CAMERA_DISTANCE,
+            cameraYaw=0,
+            cameraPitch=CAMERA_PITCH,
+            cameraTargetPosition=[
+                robot_x,
+                robot_y,
+                robot_z
+            ]
+        )
 
 
     # --------------------------------------------------------
@@ -2401,6 +2779,36 @@ while (
 
         break
 
+
+# Save separate diagnostic CSV even when a fall ends the run.
+tracking_csv = OUTPUT_DIR / "path_tracking_diagnostics.csv"
+if tracking_records:
+    with tracking_csv.open("w", newline="", encoding="utf-8") as _f:
+        _writer = csv.DictWriter(_f, fieldnames=list(tracking_records[0].keys()))
+        _writer.writeheader()
+        _writer.writerows(tracking_records)
+print(f"[TRACK SUMMARY] mean route error={sum_path_error/max(1,n_path_error):.3f}m "
+      f"max route error={max_path_error:.3f}m")
+print(f"[TRACK SUMMARY] diagnostics saved to: {tracking_csv}")
+_lm = [r["local_route_error_m"] for r in tracking_records]
+print(f"[FIX SUMMARY] mode={args.tracking_mode} gait={args.gait_mode} "
+      f"final_progress={tracking_progress:.2f}/{path_length:.2f} m "
+      f"({100*tracking_progress/path_length:.1f}%) final_waypoint={current_waypoint}/{len(waypoints)-1}")
+print(f"[FIX SUMMARY] steering saturated {100*sat_steps/max(1,steer_steps):.1f}% of steps; "
+      f"recovery episodes={recovery_count}; first local_error>0.85m at t={first_exceed_t}")
+print(f"[FIX SUMMARY] stuck_stop={stuck_stop} escapes={escapes} goal_stop={goal_stop} wall_stop={wall_stop}")
+print(f"[FIX SUMMARY] waypoints passed while far off route={far_adv_count}")
+print(f"[FIX SUMMARY] pivot bursts={pivot_count} time pivoting={pivot_steps*TIME_STEP:.1f} s")
+print(f"[FIX SUMMARY] deviation episodes={dev_count} max deviation={dev_max:.2f} m "
+      f"time deviated={dev_steps*TIME_STEP:.1f} s next-waypoint index={wf_index}/{len(waypoints)-1}")
+if _lm:
+    print(f"[FIX SUMMARY] local route error mean={sum(_lm)/len(_lm):.2f} max={max(_lm):.2f} m (1 Hz samples)")
+if args.steering_test != "auto" and len(tracking_records) > 6:
+    _r = tracking_records[3:]
+    _yr = sum(r["yaw_rate_deg_s"] for r in _r)/len(_r)
+    _dx = _r[-1]["robot_x"]-_r[0]["robot_x"]; _dy = _r[-1]["robot_y"]-_r[0]["robot_y"]
+    _dt = _r[-1]["time_s"]-_r[0]["time_s"]
+    print(f"[STEERING TEST {args.steering_test}] mean yaw_rate={_yr:+.2f} deg/s, translation={math.hypot(_dx,_dy):.2f} m in {_dt:.0f} s")
 
 # ============================================================
 # STOP MOTORS
@@ -2575,8 +2983,6 @@ else:
     print(f"  Total: {len(stumble_log)} event(s)")
 
 
-STUMBLE_CSV = SCRIPT_DIR / "stumble_log.csv"
-
 with open(STUMBLE_CSV, "w", newline="", encoding="utf-8") as f:
 
     writer = csv.writer(f)
@@ -2634,8 +3040,65 @@ print(
 
 
 # ============================================================
-# KEEP WINDOW OPEN
+# SAVE RESULT JSON  (this is what the runners look for: result_*.json)
 # ============================================================
+
+timed_out = bool(
+    (not fallen)
+    and (not reached_goal)
+    and simulation_time >= MAX_SIMULATION_TIME
+)
+
+result = {
+    "terrain": TERRAIN_DIR.name,
+    "scenario_id": args.scenario_id,
+    "risk_budget": float(args.risk_budget),
+    "seed": int(args.seed),
+    "path_file": str(CMDP_PATH),
+    "reached_goal": bool(reached_goal),
+    "fell": bool(fallen),
+    "fall_time": None if fall_time is None else float(fall_time),
+    "fall_reason": fall_reason,
+    "timed_out": timed_out,
+    "simulation_time": float(simulation_time),
+    "final_position": [float(final_x), float(final_y), float(final_z)],
+    "goal_position": [float(GOAL[0]), float(GOAL[1]), float(GOAL[2])],
+    "distance_from_goal": float(distance_from_goal),
+    "waypoints_total": len(waypoints) - 1,
+    "waypoints_reached": int(max(0, current_waypoint - 1)),
+    "max_abs_pitch_deg": float(max_pitch_seen),
+    "max_abs_roll_deg": float(max_roll_seen),
+    "terrain_time_s": {k: float(v) for k, v in terrain_time.items()},
+    "stumble_events": int(sum(1 for e in stumble_log if e["kind"] == "stumble")),
+    "slip_events": int(sum(1 for e in stumble_log if e["kind"] == "slip")),
+    "touched_wall": bool(touched_wall),
+    "stop_reason": stop_reason,
+    "wall_stop": bool(wall_stop),
+    "stuck_stop": bool(stuck_stop),
+    "wall_contact_time": wall_contact_time,
+    "obj_up_axis_in_file": obj_info["up_axis_in_file"],
+    "trajectory_csv": str(OUTPUT_CSV),
+}
+
+with open(RESULT_JSON, "w", encoding="utf-8") as f:
+
+    json.dump(result, f, indent=2)
+
+print()
+print(f"Result saved to: {RESULT_JSON}")
+
+
+# ============================================================
+# KEEP WINDOW OPEN (GUI only) / EXIT (headless)
+# ============================================================
+
+if HEADLESS:
+
+    p.disconnect()
+
+    # Exit code 0 even if the robot fell: a fall is a valid result.
+    sys.exit(0)
+
 
 print()
 print("========================================")

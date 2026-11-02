@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_1",
+  "scenario_id": "water_09",
+  "risk_budget": 0.0,
+  "seed": 2,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\water_09\\rrt_star\\seed_002\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": true,
+  "fall_time": 2.9875000000000433,
+  "fall_reason": "lost balance on rock (pitch 45.2 deg, roll 6.3 deg)",
+  "timed_out": false,
+  "simulation_time": 2.9875000000000433,
+  "final_position": [
+    -32.87471364580298,
+    15.992180890593666,
+    0.5778465422548564
+  ],
+  "goal_position": [
+    30.608829,
+    -0.48938400000000115,
+    -0.016211808166703322
+  ],
+  "distance_from_goal": 65.5881252065062,
+  "waypoints_total": 48,
+  "waypoints_reached": 0,
+  "max_abs_pitch_deg": 45.171118927528106,
+  "max_abs_roll_deg": 6.91448967698354,
+  "terrain_time_s": {
+    "rock": 2.99166666666671,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Y",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\water_09\\rrt_star\\seed_002\\pybullet_execution.csv"
+}

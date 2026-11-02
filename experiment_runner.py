@@ -12,19 +12,34 @@ For each terrain:
        - run the SAME path for Monte Carlo seeds 1..25
     3. Each seed gets its own output directory.
 
-IMPORTANT:
-    This runner calls the existing run.py. It does NOT modify run.py.
-    The CMDP implementation is also not modified by this file.
+Failure handling:
+    One failed trial/condition never kills the terrain job. Failures are
+    appended to <terrain_dir>/failures.jsonl and the runner carries on.
+    A robot falling over is NOT a failure: run.py records it and exits 0.
+    "CMDP cannot reach the goal" is also not a failure: cmdp_result.json
+    records reached_goal=false and the Monte Carlo trials are skipped.
+
+Stale data:
+    If terrain_grid.json is missing or was produced by an older version of
+    the pipeline (no/old metadata.schema_version), it is regenerated and the
+    derived files (scenarios, betas, CMDP and baseline results) are MOVED
+    into <terrain_dir>/_stale_<timestamp>/ rather than silently reused.
 """
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-D_VALUES = [3, 5, 7, 10, 15]
-NUM_MONTE_CARLO = 25
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
+
+D_VALUES = [3,4,5,6,7]
+NUM_MONTE_CARLO = 5
 SCENARIO_SEED = 42
 SCENARIO_GENERATOR = "generate_scenarios.py"
 RUN_SCRIPT = "run.py"
@@ -33,21 +48,130 @@ BASELINE_RUNNER_SCRIPT = "baseline_runner.py"
 
 
 def run_command(cmd, cwd):
+    """Run a command and return its exit code. Never raises on failure."""
     print("\n" + "=" * 80)
     print("RUNNING:")
     print(" ".join(str(x) for x in cmd))
     print("=" * 80)
 
     result = subprocess.run(cmd, cwd=str(cwd), check=False)
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Command failed with exit code {result.returncode}:\n"
-            f"{' '.join(str(x) for x in cmd)}"
-        )
+    return result.returncode
 
 
-def generate_scenarios(terrain_dir, python_exe):
+def log_failure(terrain_dir, what, cmd=None, returncode=None):
+    """Append one failure record and keep going."""
+    record = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "what": what,
+        "returncode": returncode,
+        "cmd": " ".join(str(x) for x in cmd) if cmd else None,
+    }
+    print(f"\n!!! FAILURE (continuing): {what} (exit code {returncode})")
+    try:
+        with (Path(terrain_dir) / "failures.jsonl").open(
+            "a", encoding="utf-8"
+        ) as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def find_terrain_obj(terrain_dir):
+    """Find the single source OBJ in a terrain folder.
+
+    Accepts newterrain.obj, newterrain_1.obj, ... Generated collision files
+    (pybullet_*.obj, *_zup.obj) are ignored.
+    """
+    candidates = [
+        p for p in sorted(terrain_dir.glob("*.obj"))
+        if not p.name.startswith("pybullet_")
+        and not p.stem.endswith("_zup")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise FileNotFoundError(f"No .obj file found in {terrain_dir}")
+    preferred = [p for p in candidates if p.name.startswith("newterrain")]
+    if len(preferred) == 1:
+        return preferred[0]
+    raise RuntimeError(
+        f"Several .obj files in {terrain_dir}: "
+        f"{[p.name for p in candidates]}. Keep exactly one."
+    )
+
+
+def grid_is_current(json_path):
+    """True when terrain_grid.json exists and has the current schema."""
+    if not json_path.is_file():
+        return False
+    try:
+        with json_path.open("r", encoding="utf-8") as f:
+            meta = json.load(f)["metadata"]
+        from cmdp_refactored import TERRAIN_GRID_SCHEMA_VERSION
+        return int(meta.get("schema_version", 0)) >= TERRAIN_GRID_SCHEMA_VERSION
+    except Exception:
+        return False
+
+
+def quarantine_stale(terrain_dir):
+    """Move files derived from an old terrain grid out of the way."""
+    stale_names = [
+        "terrain_grid.json",
+        "start_goal_scenarios.json",
+        "baseline",
+        "failures.jsonl",
+    ]
+    # scenario folders: mixed_01, mud_02, water_01, hazard_01, long_02 ...
+    for p in terrain_dir.iterdir():
+        if p.is_dir() and p.name.rsplit("_", 1)[0] in (
+            "mixed", "mud", "water", "hazard", "long"
+        ):
+            stale_names.append(p.name)
+
+    existing = [n for n in stale_names if (terrain_dir / n).exists()]
+    if not existing:
+        return
+
+    stale_dir = terrain_dir / f"_stale_{time.strftime('%Y%m%d_%H%M%S')}"
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    for name in existing:
+        shutil.move(str(terrain_dir / name), str(stale_dir / name))
+    print(f"Moved stale files {existing} -> {stale_dir}")
+
+
+def ensure_terrain_grid(terrain_dir, experiment_dir):
+    """Generate terrain_grid.json from the OBJ when missing or stale."""
+    json_path = terrain_dir / "terrain_grid.json"
+
+    if str(experiment_dir) not in sys.path:
+        sys.path.insert(0, str(experiment_dir))
+
+    if grid_is_current(json_path):
+        print(f"\nTerrain grid already exists: {json_path}")
+        return
+
+    obj_path = find_terrain_obj(terrain_dir)
+
+    if json_path.exists():
+        print(f"\nTerrain grid is from an older pipeline version: {json_path}")
+    quarantine_stale(terrain_dir)
+
+    from cmdp_refactored import generate_terrain_grid
+
+    print(f"\nGenerating terrain grid from {obj_path.name}: {json_path}")
+    generate_terrain_grid(
+        obj_path=obj_path,
+        json_path=json_path,
+        resolution=0.5,
+        samples_per_side=5,
+        chunk_size=100_000,
+    )
+    if not json_path.is_file():
+        raise RuntimeError(f"Terrain generator did not create {json_path}")
+    print(f"Terrain grid generated: {json_path}")
+
+
+def generate_scenarios(terrain_dir, python_exe, experiment_dir):
     scenario_file = terrain_dir / "start_goal_scenarios.json"
 
     if scenario_file.exists():
@@ -55,30 +179,33 @@ def generate_scenarios(terrain_dir, python_exe):
         print("Keeping the existing terrain-specific scenarios.")
         return
 
-    run_command(
-        [
-            python_exe,
-            SCENARIO_GENERATOR,
-            "--terrain-dir",
-            str(terrain_dir),
-            "--seed",
-            str(SCENARIO_SEED),
-        ],
-        cwd=terrain_dir.parent,
-    )
+    # The generator lives next to this script, not next to the terrain
+    # folders, so use its absolute path and run from the script's folder.
+    cmd = [
+        python_exe,
+        str(experiment_dir / SCENARIO_GENERATOR),
+        "--terrain-dir",
+        str(terrain_dir),
+        "--seed",
+        str(SCENARIO_SEED),
+    ]
+    code = run_command(cmd, cwd=experiment_dir)
+    if code != 0 or not scenario_file.exists():
+        log_failure(terrain_dir, "scenario generation", cmd, code)
 
 
 def load_scenarios(terrain_dir):
     path = terrain_dir / "start_goal_scenarios.json"
 
     if not path.exists():
-        raise FileNotFoundError(path)
+        return []
 
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     scenarios = []
 
+    # A category may contain 0, 1 or 2 scenarios; empty ones are skipped.
     for scenario_type, items in data["scenarios"].items():
         for item in items:
             scenario = dict(item)
@@ -105,34 +232,52 @@ def run_cmdp(
     cmdp_result = condition_dir / "cmdp_result.json"
     cmdp_path = condition_dir / "cmdp_path_world.csv"
 
-    if cmdp_result.exists() and cmdp_path.exists():
-        print(f"\nCMDP already exists: {condition_dir}")
-        return cmdp_path
+    if cmdp_result.exists():
+        if cmdp_path.exists():
+            print(f"\nCMDP already exists: {condition_dir}")
+            return cmdp_path
+        try:
+            with cmdp_result.open("r", encoding="utf-8") as f:
+                reached = json.load(f).get("reached_goal", False)
+        except Exception:
+            reached = None
+        if reached is False:
+            print(f"\nCMDP already solved (goal not reached): {condition_dir}")
+            return None
 
-    run_command(
-        [
-            python_exe,
-            str(experiment_dir / CMDP_SCRIPT),
-            "--terrain-grid",
-            str(terrain_dir / "terrain_grid.json"),
-            "--start",
-            f"{int(start[0])},{int(start[1])}",
-            "--goal",
-            f"{int(goal[0])},{int(goal[1])}",
-            "--D",
-            str(risk_budget),
-            "--output",
-            str(cmdp_result),
-            "--path-output",
-            str(cmdp_path),
-            "--backend",
-            "auto",
-        ],
-        cwd=experiment_dir,
-    )
+    cmd = [
+        python_exe,
+        str(experiment_dir / CMDP_SCRIPT),
+        "--terrain-grid",
+        str(terrain_dir / "terrain_grid.json"),
+        "--start",
+        f"{int(start[0])},{int(start[1])}",
+        "--goal",
+        f"{int(goal[0])},{int(goal[1])}",
+        "--D",
+        str(risk_budget),
+        "--output",
+        str(cmdp_result),
+        "--path-output",
+        str(cmdp_path),
+        "--backend",
+        "auto",
+    ]
+    code = run_command(cmd, cwd=experiment_dir)
 
-    if not cmdp_path.exists():
-        raise RuntimeError(f"CMDP did not create path: {cmdp_path}")
+    if code == 2:
+        # CMDP finished but could not reach the goal: a valid outcome.
+        print(f"CMDP found no path to the goal: {scenario_id} D={risk_budget:g}")
+        return None
+
+    if code != 0 or not cmdp_path.exists():
+        log_failure(
+            terrain_dir,
+            f"CMDP {scenario_id} D={risk_budget:g}",
+            cmd,
+            code,
+        )
+        return None
 
     return cmdp_path
 
@@ -160,7 +305,7 @@ def run_monte_carlo(
 
         seed_dir.mkdir(parents=True, exist_ok=True)
 
-        run_command(
+        cmd = (
             [
                 python_exe,
                 str(experiment_dir / RUN_SCRIPT),
@@ -177,9 +322,16 @@ def run_monte_carlo(
                 "--output-dir",
                 str(seed_dir),
                 "--headless",
-            ],
-            cwd=experiment_dir,
+            ]
         )
+        code = run_command(cmd, cwd=experiment_dir)
+        if code != 0:
+            log_failure(
+                terrain_dir,
+                f"PyBullet {scenario_id} D={risk_budget:g} seed={seed}",
+                cmd,
+                code,
+            )
 
 
 def run_baseline_runner(
@@ -191,17 +343,17 @@ def run_baseline_runner(
     Run the complete RRT*/RW-RRT* baseline suite for this terrain
     immediately after all CMDP conditions for the terrain are complete.
     """
-    run_command(
-        [
-            python_exe,
-            str(experiment_dir / BASELINE_RUNNER_SCRIPT),
-            "--experiments-dir",
-            str(terrain_dir.parent),
-            "--terrain",
-            terrain_dir.name,
-        ],
-        cwd=experiment_dir,
-    )
+    cmd = [
+        python_exe,
+        str(experiment_dir / BASELINE_RUNNER_SCRIPT),
+        "--experiments-dir",
+        str(terrain_dir.parent),
+        "--terrain",
+        terrain_dir.name,
+    ]
+    code = run_command(cmd, cwd=experiment_dir)
+    if code != 0:
+        log_failure(terrain_dir, "baseline runner", cmd, code)
 
 
 def main():
@@ -213,14 +365,14 @@ def main():
         "--experiments-dir",
         type=Path,
         required=True,
-        help="Directory containing terrain_01, terrain_02, ...",
+        help="Directory containing terrain_1, terrain_2, ...",
     )
 
     parser.add_argument(
         "--terrain",
         type=str,
         default=None,
-        help="Run only one terrain, e.g. terrain_01.",
+        help="Run only one terrain, e.g. terrain_1.",
     )
 
     parser.add_argument(
@@ -264,12 +416,12 @@ def main():
         print(f"TERRAIN: {terrain_dir.name}")
         print("#" * 80)
 
-        terrain_grid = terrain_dir / "terrain_grid.json"
-        if not terrain_grid.exists():
-            print(f"Skipping: missing {terrain_grid}")
+        try:
+            ensure_terrain_grid(terrain_dir, experiment_dir)
+        except Exception as exc:  # keep going with the next terrain
+            log_failure(terrain_dir, f"terrain grid: {exc}")
             continue
-
-        generate_scenarios(terrain_dir, args.python)
+        generate_scenarios(terrain_dir, args.python, experiment_dir)
         scenarios = load_scenarios(terrain_dir)
 
         print(f"Loaded {len(scenarios)} scenarios.")
@@ -299,6 +451,11 @@ def main():
                     experiment_dir=experiment_dir,
                     python_exe=args.python,
                 )
+
+                if cmdp_path is None:
+                    print("No CMDP path for this condition; "
+                          "skipping its Monte Carlo trials.")
+                    continue
 
                 run_monte_carlo(
                     terrain_dir=terrain_dir,

@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_4",
+  "scenario_id": "mud_04",
+  "risk_budget": 0.0,
+  "seed": 1,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\baseline\\mud_04\\risk_weighted_rrt_star\\alpha_0.75\\seed_001\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": false,
+  "fall_time": null,
+  "fall_reason": null,
+  "timed_out": false,
+  "simulation_time": 122.9999999999703,
+  "final_position": [
+    -31.570924943653385,
+    -137.6336853343557,
+    1.1040628781797441
+  ],
+  "goal_position": [
+    23.433086000000003,
+    -134.03096,
+    1.1075270234317214
+  ],
+  "distance_from_goal": 55.12187269790776,
+  "waypoints_total": 42,
+  "waypoints_reached": 0,
+  "max_abs_pitch_deg": 26.20171001229092,
+  "max_abs_roll_deg": 12.22953391779524,
+  "terrain_time_s": {
+    "rock": 123.00416666663696,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": "stuck",
+  "wall_stop": false,
+  "stuck_stop": true,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Z",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\baseline\\mud_04\\risk_weighted_rrt_star\\alpha_0.75\\seed_001\\pybullet_execution.csv"
+}

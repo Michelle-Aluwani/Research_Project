@@ -1,0 +1,50 @@
+{
+  "start": [
+    8,
+    69
+  ],
+  "goal": [
+    139,
+    142
+  ],
+  "risk_budget": 5.0,
+  "lambda": 0.25,
+  "expected_cost": 82.88894698921885,
+  "expected_risk": 3.6093106193027955,
+  "constraint_satisfied": true,
+  "reached_goal": true,
+  "path_states": 132,
+  "path_length_m": 80.82199501677033,
+  "analysis": {
+    "states": 132,
+    "movements": 131,
+    "path_length_m": 80.82199501677033,
+    "terrain_counts": {
+      "rock": 132,
+      "mud": 0,
+      "water": 0,
+      "wall": 0
+    },
+    "terrain_entries": {
+      "rock": 0,
+      "mud": 0,
+      "water": 0,
+      "wall": 0
+    },
+    "accumulated_risk": 3.560446664766384,
+    "mean_path_risk": 0.026973080793684726,
+    "maximum_path_risk": 0.08096201701124295,
+    "maximum_slope_deg": 11.80566789352964,
+    "maximum_roughness_m": 0.07722028007064727,
+    "minimum_clearance_m": 1.5,
+    "maximum_clearance_risk": 0.3199764085307007,
+    "risk_budget": 5.0,
+    "risk_remaining": 1.439553335233616,
+    "risk_budget_satisfied": true,
+    "high_risk_threshold": 0.10412787252047388,
+    "high_risk_states": 0,
+    "high_risk_percentage": 0.0
+  },
+  "solver_backend": "numpy",
+  "solver_device": "cpu"
+}

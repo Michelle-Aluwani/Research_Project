@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_1",
+  "scenario_id": "hazard_09",
+  "risk_budget": 0.0,
+  "seed": 3,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\hazard_09\\risk_weighted_rrt_star\\alpha_0.50\\seed_003\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": true,
+  "fall_time": 2.7750000000000328,
+  "fall_reason": "encountered mud 42.92 m from water (patch ratio 0.87) -> lost balance (pitch -35.0 deg, roll 45.5 deg)",
+  "timed_out": false,
+  "simulation_time": 2.7750000000000328,
+  "final_position": [
+    -23.266687281024513,
+    -29.743765035416054,
+    -0.004201644350967121
+  ],
+  "goal_position": [
+    30.108829,
+    -16.989384,
+    -0.09463099384058424
+  ],
+  "distance_from_goal": 54.87822859625203,
+  "waypoints_total": 40,
+  "waypoints_reached": 1,
+  "max_abs_pitch_deg": 35.044696422575186,
+  "max_abs_roll_deg": 45.52149337677193,
+  "terrain_time_s": {
+    "rock": 2.070833333333331,
+    "mud": 0.708333333333332,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Y",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\hazard_09\\risk_weighted_rrt_star\\alpha_0.50\\seed_003\\pybullet_execution.csv"
+}

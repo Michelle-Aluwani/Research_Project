@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_4",
+  "scenario_id": "long_04",
+  "risk_budget": 0.0,
+  "seed": 3,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\baseline\\long_04\\risk_weighted_rrt_star\\alpha_0.00\\seed_003\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": true,
+  "fall_time": 23.466666666665656,
+  "fall_reason": "lost balance on rock (pitch 45.3 deg, roll 1.8 deg)",
+  "timed_out": false,
+  "simulation_time": 23.466666666665656,
+  "final_position": [
+    -30.190833004129914,
+    -75.32213067171695,
+    0.28380322515251316
+  ],
+  "goal_position": [
+    33.933086,
+    -100.53096,
+    -0.004308104718203509
+  ],
+  "distance_from_goal": 68.90110350749629,
+  "waypoints_total": 58,
+  "waypoints_reached": 4,
+  "max_abs_pitch_deg": 45.312343108625065,
+  "max_abs_roll_deg": 5.308115706350529,
+  "terrain_time_s": {
+    "rock": 23.470833333332322,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Z",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\baseline\\long_04\\risk_weighted_rrt_star\\alpha_0.00\\seed_003\\pybullet_execution.csv"
+}

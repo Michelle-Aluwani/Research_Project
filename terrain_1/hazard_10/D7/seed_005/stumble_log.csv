@@ -1,0 +1,3 @@
+time,x,y,terrain,kind,reason,ratio,slope_deg
+4.2833333333334105,-23.583734357411196,-30.190588987645494,mud,slip,"mud 42.92 m from water (patch ratio 0.87, deep in patch)",0.8691863604888141,
+5.8833333333333195,-23.138771042407022,-29.906890115454182,mud,slip,"mud 42.99 m from water (patch ratio 0.87, deep in patch)",0.870659508829811,

@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_1",
+  "scenario_id": "hazard_03",
+  "risk_budget": 0.0,
+  "seed": 1,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\hazard_03\\risk_weighted_rrt_star\\alpha_0.75\\seed_001\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": true,
+  "fall_time": 25.50416666666554,
+  "fall_reason": "body height dropped below the local terrain surface (lost footing)",
+  "timed_out": false,
+  "simulation_time": 25.50416666666554,
+  "final_position": [
+    -21.742463758712343,
+    -22.806903231199986,
+    -0.33600577760406386
+  ],
+  "goal_position": [
+    21.108829,
+    -36.489384,
+    0.5827094404975476
+  ],
+  "distance_from_goal": 44.98270302106639,
+  "waypoints_total": 42,
+  "waypoints_reached": 7,
+  "max_abs_pitch_deg": 14.786119054978645,
+  "max_abs_roll_deg": 8.25069957098131,
+  "terrain_time_s": {
+    "rock": 25.508333333332207,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Y",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\hazard_03\\risk_weighted_rrt_star\\alpha_0.75\\seed_001\\pybullet_execution.csv"
+}

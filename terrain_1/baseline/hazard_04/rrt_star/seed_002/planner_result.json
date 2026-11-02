@@ -1,0 +1,26 @@
+{
+  "terrain_id": "terrain_1",
+  "scenario_id": "hazard_04",
+  "algorithm": "rrt_star",
+  "start": [
+    11,
+    23
+  ],
+  "goal": [
+    138,
+    23
+  ],
+  "seed": 2,
+  "alpha": null,
+  "beta": null,
+  "path_found": true,
+  "path_length": 71.2697743991062,
+  "planned_risk": 0.999999903235903,
+  "planner_cost": 72.18605853861838,
+  "distance_cost": 72.18605853861838,
+  "risk_cost": 0.9999999212585202,
+  "number_of_nodes": 4635,
+  "iterations": 5000,
+  "path_grid_points": 51,
+  "path_output": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\hazard_04\\rrt_star\\seed_002\\cmdp_path_world.csv"
+}

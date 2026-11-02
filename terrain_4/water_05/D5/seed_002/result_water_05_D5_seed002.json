@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_4",
+  "scenario_id": "water_05",
+  "risk_budget": 5.0,
+  "seed": 2,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\water_05\\D5\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": true,
+  "fall_time": 94.35833333332968,
+  "fall_reason": "body height dropped below the local terrain surface (lost footing)",
+  "timed_out": false,
+  "simulation_time": 94.35833333332968,
+  "final_position": [
+    -11.315435737962495,
+    -98.1683247202222,
+    0.2402479365350923
+  ],
+  "goal_position": [
+    27.433086000000003,
+    -123.53096,
+    0.944002352045305
+  ],
+  "distance_from_goal": 46.311026820967605,
+  "waypoints_total": 129,
+  "waypoints_reached": 51,
+  "max_abs_pitch_deg": 10.910722643240025,
+  "max_abs_roll_deg": 10.978798891334375,
+  "terrain_time_s": {
+    "rock": 94.36249999999634,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Z",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\water_05\\D5\\seed_002\\pybullet_execution.csv"
+}

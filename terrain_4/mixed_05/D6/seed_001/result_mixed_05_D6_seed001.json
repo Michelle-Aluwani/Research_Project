@@ -1,0 +1,42 @@
+{
+  "terrain": "terrain_4",
+  "scenario_id": "mixed_05",
+  "risk_budget": 6.0,
+  "seed": 1,
+  "path_file": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\mixed_05\\D6\\cmdp_path_world.csv",
+  "reached_goal": false,
+  "fell": true,
+  "fall_time": 44.11250000000814,
+  "fall_reason": "lost balance on rock (pitch 1.3 deg, roll -45.4 deg)",
+  "timed_out": false,
+  "simulation_time": 44.11250000000814,
+  "final_position": [
+    -29.823217771636163,
+    -113.8240035021706,
+    0.8223281462029249
+  ],
+  "goal_position": [
+    37.433086,
+    -125.53096,
+    0.719098658045824
+  ],
+  "distance_from_goal": 68.26758548143233,
+  "waypoints_total": 149,
+  "waypoints_reached": 20,
+  "max_abs_pitch_deg": 8.989112962942999,
+  "max_abs_roll_deg": 45.37023733342963,
+  "terrain_time_s": {
+    "rock": 44.11666666667481,
+    "mud": 0.0,
+    "water": 0.0
+  },
+  "stumble_events": 0,
+  "slip_events": 0,
+  "touched_wall": false,
+  "stop_reason": null,
+  "wall_stop": false,
+  "stuck_stop": false,
+  "wall_contact_time": null,
+  "obj_up_axis_in_file": "Z",
+  "trajectory_csv": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_4\\mixed_05\\D6\\seed_001\\pybullet_execution.csv"
+}

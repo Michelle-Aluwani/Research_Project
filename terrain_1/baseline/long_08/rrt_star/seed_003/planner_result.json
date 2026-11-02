@@ -1,0 +1,26 @@
+{
+  "terrain_id": "terrain_1",
+  "scenario_id": "long_08",
+  "algorithm": "rrt_star",
+  "start": [
+    25,
+    28
+  ],
+  "goal": [
+    129,
+    136
+  ],
+  "seed": 3,
+  "alpha": null,
+  "beta": null,
+  "path_found": true,
+  "path_length": 79.97453874099062,
+  "planned_risk": 0.9999999939308796,
+  "planner_cost": 81.15655436112792,
+  "distance_cost": 81.15655436112792,
+  "risk_cost": 0.9999999997064516,
+  "number_of_nodes": 4615,
+  "iterations": 5000,
+  "path_grid_points": 57,
+  "path_output": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\long_08\\rrt_star\\seed_003\\cmdp_path_world.csv"
+}

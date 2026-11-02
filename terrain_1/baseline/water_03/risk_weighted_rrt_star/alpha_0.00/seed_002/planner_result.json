@@ -1,0 +1,26 @@
+{
+  "terrain_id": "terrain_1",
+  "scenario_id": "water_03",
+  "algorithm": "risk_weighted_rrt_star",
+  "start": [
+    11,
+    110
+  ],
+  "goal": [
+    127,
+    144
+  ],
+  "seed": 2,
+  "alpha": 0.0,
+  "beta": 60.44005299477993,
+  "path_found": true,
+  "path_length": 71.20001809514163,
+  "planned_risk": 0.9999998906221713,
+  "planner_cost": 689.7834986666328,
+  "distance_cost": 71.55961363747757,
+  "risk_cost": 0.9999999150543336,
+  "number_of_nodes": 4643,
+  "iterations": 5000,
+  "path_grid_points": 45,
+  "path_output": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_1\\baseline\\water_03\\risk_weighted_rrt_star\\alpha_0.00\\seed_002\\cmdp_path_world.csv"
+}

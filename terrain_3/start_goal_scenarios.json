@@ -1,0 +1,545 @@
+{
+  "metadata": {
+    "terrain_dir": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_3",
+    "scenario_seed": 42,
+    "max_scenarios_per_type": 5,
+    "scenario_counts": {
+      "mixed": 5,
+      "mud": 5,
+      "water": 5,
+      "hazard": 5,
+      "long": 5
+    },
+    "excluded_start_goal_cells": "water, wall, no-surface, border",
+    "scenario_types": [
+      "mixed",
+      "mud",
+      "water",
+      "hazard",
+      "long"
+    ],
+    "min_distance_cells": 40.0,
+    "max_distance_cells": 150.0,
+    "border_margin": 5,
+    "num_candidate_pairs": 10000,
+    "min_pair_difference": 15.0,
+    "note": "Coordinates are terrain-specific. Reuse these exact start/goal pairs for every D and every Monte Carlo seed on this terrain.",
+    "beta_definition": "beta = representative scenario edge distance / representative scenario edge hazard probability. The representative edge is the fixed start-to-goal scenario edge evaluated using the RRT* edge-distance and edge-hazard definitions. Beta is fixed for all alpha values and Monte Carlo seeds of that terrain/scenario."
+  },
+  "terrain": {
+    "grid_width": 163,
+    "grid_height": 166
+  },
+  "scenarios": {
+    "mixed": [
+      {
+        "scenario_id": "mixed_01",
+        "start": [
+          17,
+          57
+        ],
+        "goal": [
+          149,
+          123
+        ],
+        "distance_cells": 147.58048651498612,
+        "line_terrain_counts": {
+          "rock": 110,
+          "mud": 15,
+          "water": 16,
+          "total": 141
+        },
+        "selection_score": 15308.52419513485,
+        "beta": 73.79024325749309
+      },
+      {
+        "scenario_id": "mixed_02",
+        "start": [
+          38,
+          60
+        ],
+        "goal": [
+          157,
+          128
+        ],
+        "distance_cells": 137.05838172107534,
+        "line_terrain_counts": {
+          "rock": 101,
+          "mud": 15,
+          "water": 14,
+          "total": 130
+        },
+        "selection_score": 14288.62941618279,
+        "beta": 68.52919086053768
+      },
+      {
+        "scenario_id": "mixed_03",
+        "start": [
+          35,
+          133
+        ],
+        "goal": [
+          149,
+          123
+        ],
+        "distance_cells": 114.43775600735974,
+        "line_terrain_counts": {
+          "rock": 88,
+          "mud": 13,
+          "water": 14,
+          "total": 115
+        },
+        "selection_score": 13268.855622439927,
+        "beta": 57.21887800369101
+      },
+      {
+        "scenario_id": "mixed_04",
+        "start": [
+          37,
+          108
+        ],
+        "goal": [
+          155,
+          124
+        ],
+        "distance_cells": 119.07980517283357,
+        "line_terrain_counts": {
+          "rock": 92,
+          "mud": 14,
+          "water": 13,
+          "total": 119
+        },
+        "selection_score": 13268.809201948272,
+        "beta": 59.5399025864867
+      },
+      {
+        "scenario_id": "mixed_05",
+        "start": [
+          16,
+          155
+        ],
+        "goal": [
+          156,
+          121
+        ],
+        "distance_cells": 144.06942770761603,
+        "line_terrain_counts": {
+          "rock": 116,
+          "mud": 13,
+          "water": 14,
+          "total": 143
+        },
+        "selection_score": 13268.559305722923,
+        "beta": 72.03471385380871
+      }
+    ],
+    "mud": [
+      {
+        "scenario_id": "mud_01",
+        "start": [
+          16,
+          155
+        ],
+        "goal": [
+          153,
+          110
+        ],
+        "distance_cells": 144.20124826089406,
+        "line_terrain_counts": {
+          "rock": 118,
+          "mud": 21,
+          "water": 1,
+          "total": 140
+        },
+        "selection_score": 21008.55798751739,
+        "beta": 72.1006241320158
+      },
+      {
+        "scenario_id": "mud_02",
+        "start": [
+          31,
+          143
+        ],
+        "goal": [
+          145,
+          130
+        ],
+        "distance_cells": 114.73883387938018,
+        "line_terrain_counts": {
+          "rock": 95,
+          "mud": 21,
+          "water": 0,
+          "total": 116
+        },
+        "selection_score": 20998.852611661205,
+        "beta": 57.36941721199711
+      },
+      {
+        "scenario_id": "mud_03",
+        "start": [
+          33,
+          121
+        ],
+        "goal": [
+          150,
+          132
+        ],
+        "distance_cells": 117.51595636338071,
+        "line_terrain_counts": {
+          "rock": 98,
+          "mud": 20,
+          "water": 1,
+          "total": 119
+        },
+        "selection_score": 20008.824840436366,
+        "beta": 58.75797821828561
+      },
+      {
+        "scenario_id": "mud_04",
+        "start": [
+          14,
+          130
+        ],
+        "goal": [
+          150,
+          131
+        ],
+        "distance_cells": 136.0036764208968,
+        "line_terrain_counts": {
+          "rock": 118,
+          "mud": 20,
+          "water": 0,
+          "total": 138
+        },
+        "selection_score": 19998.63996323579,
+        "beta": 68.00183822690809
+      },
+      {
+        "scenario_id": "mud_05",
+        "start": [
+          15,
+          66
+        ],
+        "goal": [
+          151,
+          121
+        ],
+        "distance_cells": 146.70037491431302,
+        "line_terrain_counts": {
+          "rock": 129,
+          "mud": 19,
+          "water": 0,
+          "total": 148
+        },
+        "selection_score": 18998.53299625086,
+        "beta": 73.35018752169633
+      }
+    ],
+    "water": [
+      {
+        "scenario_id": "water_01",
+        "start": [
+          35,
+          73
+        ],
+        "goal": [
+          145,
+          69
+        ],
+        "distance_cells": 110.07270324653611,
+        "line_terrain_counts": {
+          "rock": 80,
+          "mud": 0,
+          "water": 31,
+          "total": 111
+        },
+        "selection_score": 30998.899272967534,
+        "beta": 55.036351623268054
+      },
+      {
+        "scenario_id": "water_02",
+        "start": [
+          19,
+          75
+        ],
+        "goal": [
+          135,
+          63
+        ],
+        "distance_cells": 116.61903789690601,
+        "line_terrain_counts": {
+          "rock": 86,
+          "mud": 0,
+          "water": 31,
+          "total": 117
+        },
+        "selection_score": 30998.833809621032,
+        "beta": 58.309518948453004
+      },
+      {
+        "scenario_id": "water_03",
+        "start": [
+          19,
+          71
+        ],
+        "goal": [
+          153,
+          74
+        ],
+        "distance_cells": 134.03357788255897,
+        "line_terrain_counts": {
+          "rock": 107,
+          "mud": 0,
+          "water": 29,
+          "total": 136
+        },
+        "selection_score": 28998.659664221173,
+        "beta": 67.01678894127949
+      },
+      {
+        "scenario_id": "water_04",
+        "start": [
+          16,
+          75
+        ],
+        "goal": [
+          155,
+          58
+        ],
+        "distance_cells": 140.03570973148243,
+        "line_terrain_counts": {
+          "rock": 111,
+          "mud": 0,
+          "water": 29,
+          "total": 140
+        },
+        "selection_score": 28998.599642902685,
+        "beta": 70.01785486574121
+      },
+      {
+        "scenario_id": "water_05",
+        "start": [
+          32,
+          69
+        ],
+        "goal": [
+          128,
+          81
+        ],
+        "distance_cells": 96.74709297958259,
+        "line_terrain_counts": {
+          "rock": 71,
+          "mud": 0,
+          "water": 26,
+          "total": 97
+        },
+        "selection_score": 25999.032529070206,
+        "beta": 48.3735464897913
+      }
+    ],
+    "hazard": [
+      {
+        "scenario_id": "hazard_01",
+        "start": [
+          32,
+          53
+        ],
+        "goal": [
+          149,
+          137
+        ],
+        "distance_cells": 144.03124660989366,
+        "line_terrain_counts": {
+          "rock": 112,
+          "mud": 12,
+          "water": 22,
+          "total": 146
+        },
+        "selection_score": 34668.5596875339,
+        "beta": 72.01562330494683
+      },
+      {
+        "scenario_id": "hazard_02",
+        "start": [
+          35,
+          73
+        ],
+        "goal": [
+          145,
+          69
+        ],
+        "distance_cells": 110.07270324653611,
+        "line_terrain_counts": {
+          "rock": 80,
+          "mud": 0,
+          "water": 31,
+          "total": 111
+        },
+        "selection_score": 31773.899272967534,
+        "beta": 55.036351623268054
+      },
+      {
+        "scenario_id": "hazard_03",
+        "start": [
+          19,
+          75
+        ],
+        "goal": [
+          135,
+          63
+        ],
+        "distance_cells": 116.61903789690601,
+        "line_terrain_counts": {
+          "rock": 86,
+          "mud": 0,
+          "water": 31,
+          "total": 117
+        },
+        "selection_score": 31773.833809621032,
+        "beta": 58.309518948453004
+      },
+      {
+        "scenario_id": "hazard_04",
+        "start": [
+          17,
+          57
+        ],
+        "goal": [
+          149,
+          123
+        ],
+        "distance_cells": 147.58048651498612,
+        "line_terrain_counts": {
+          "rock": 110,
+          "mud": 15,
+          "water": 16,
+          "total": 141
+        },
+        "selection_score": 31548.52419513485,
+        "beta": 73.79024325749309
+      },
+      {
+        "scenario_id": "hazard_05",
+        "start": [
+          38,
+          70
+        ],
+        "goal": [
+          148,
+          130
+        ],
+        "distance_cells": 125.29964086141668,
+        "line_terrain_counts": {
+          "rock": 93,
+          "mud": 11,
+          "water": 19,
+          "total": 123
+        },
+        "selection_score": 30583.747003591387,
+        "beta": 62.64982043070908
+      }
+    ],
+    "long": [
+      {
+        "scenario_id": "long_01",
+        "start": [
+          24,
+          18
+        ],
+        "goal": [
+          144,
+          108
+        ],
+        "distance_cells": 150.0,
+        "line_terrain_counts": {
+          "rock": 151,
+          "mud": 0,
+          "water": 0,
+          "total": 151
+        },
+        "selection_score": 150.0,
+        "beta": 75.00188063525165
+      },
+      {
+        "scenario_id": "long_02",
+        "start": [
+          18,
+          138
+        ],
+        "goal": [
+          149,
+          65
+        ],
+        "distance_cells": 149.96666296213968,
+        "line_terrain_counts": {
+          "rock": 143,
+          "mud": 0,
+          "water": 0,
+          "total": 143
+        },
+        "selection_score": 149.96666296213968,
+        "beta": 74.98335958155498
+      },
+      {
+        "scenario_id": "long_03",
+        "start": [
+          10,
+          32
+        ],
+        "goal": [
+          147,
+          93
+        ],
+        "distance_cells": 149.96666296213968,
+        "line_terrain_counts": {
+          "rock": 142,
+          "mud": 0,
+          "water": 0,
+          "total": 142
+        },
+        "selection_score": 149.96666296213968,
+        "beta": 74.98639146629293
+      },
+      {
+        "scenario_id": "long_04",
+        "start": [
+          8,
+          69
+        ],
+        "goal": [
+          139,
+          142
+        ],
+        "distance_cells": 149.96666296213968,
+        "line_terrain_counts": {
+          "rock": 142,
+          "mud": 0,
+          "water": 0,
+          "total": 142
+        },
+        "selection_score": 149.96666296213968,
+        "beta": 74.9842230334397
+      },
+      {
+        "scenario_id": "long_05",
+        "start": [
+          19,
+          152
+        ],
+        "goal": [
+          128,
+          49
+        ],
+        "distance_cells": 149.96666296213968,
+        "line_terrain_counts": {
+          "rock": 138,
+          "mud": 0,
+          "water": 0,
+          "total": 138
+        },
+        "selection_score": 149.96666296213968,
+        "beta": 74.98333414912135
+      }
+    ]
+  }
+}

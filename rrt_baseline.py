@@ -107,6 +107,13 @@ GRID_RESOLUTION = 0.5
 # VALID TERRAIN MASK
 # ============================================================
 
+# Placeholder defaults so that importing this module never fails
+# (baseline_runner imports it to calculate beta). configure_terrain()
+# overwrites all of these with the real terrain before anything is used.
+height_grid = np.zeros((1, 1), dtype=np.float64)
+weighted_risk_grid = np.zeros((1, 1), dtype=np.float64)
+wall_mask_grid = np.zeros((1, 1), dtype=bool)
+
 valid_terrain_mask = np.isfinite(height_grid)
 
 GRID_WIDTH, GRID_HEIGHT = weighted_risk_grid.shape
@@ -188,6 +195,10 @@ def is_valid_point(x, y):
         return False
 
     if not valid_terrain_mask[gx, gy]:
+        return False
+
+    # Wall cells (terrain id 3) are never traversable.
+    if wall_mask_grid[gx, gy]:
         return False
 
     return True
@@ -1122,7 +1133,7 @@ def configure_terrain(terrain_dir):
     global GRID_RESOLUTION
     global valid_terrain_mask
     global GRID_WIDTH, GRID_HEIGHT
-    global weighted_risk_grid, height_grid
+    global weighted_risk_grid, height_grid, wall_mask_grid
     global TERRAIN_BOUNDS, TERRAIN_HEIGHT_GRID
 
     terrain_dir = Path(terrain_dir).resolve()
@@ -1137,6 +1148,7 @@ def configure_terrain(terrain_dir):
     height_grid = terrain.height_grid
     weighted_risk_grid = features.weighted_risk_grid
     valid_terrain_mask = np.isfinite(height_grid)
+    wall_mask_grid = np.asarray(terrain.wall_mask, dtype=bool)
 
     TERRAIN_BOUNDS = dict(terrain.bounds)
     TERRAIN_HEIGHT_GRID = height_grid
@@ -1209,7 +1221,7 @@ def calculate_beta(start, goal):
 
         for x in range(GRID_WIDTH):
             for y in range(GRID_HEIGHT):
-                if not valid_terrain_mask[x, y]:
+                if not is_valid_point(x, y):
                     continue
 
                 for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
@@ -1219,7 +1231,7 @@ def calculate_beta(start, goal):
                     if (
                         0 <= nx < GRID_WIDTH
                         and 0 <= ny < GRID_HEIGHT
-                        and valid_terrain_mask[nx, ny]
+                        and is_valid_point(nx, ny)
                     ):
                         hazards.append(
                             edge_hazard_probability(x, y, nx, ny)
@@ -1390,4 +1402,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main() returns 2 when no path was found; the runner expects that code.
+    sys.exit(main())

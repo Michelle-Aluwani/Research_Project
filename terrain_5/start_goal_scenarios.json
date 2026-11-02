@@ -1,0 +1,141 @@
+{
+  "metadata": {
+    "terrain_dir": "C:\\Users\\coura\\Downloads\\Research_Project\\terrain_5",
+    "scenario_seed": 42,
+    "max_scenarios_per_type": 5,
+    "scenario_counts": {
+      "mixed": 0,
+      "mud": 0,
+      "water": 0,
+      "hazard": 0,
+      "long": 5
+    },
+    "excluded_start_goal_cells": "water, wall, no-surface, border",
+    "scenario_types": [
+      "mixed",
+      "mud",
+      "water",
+      "hazard",
+      "long"
+    ],
+    "min_distance_cells": 40.0,
+    "max_distance_cells": 150.0,
+    "border_margin": 5,
+    "num_candidate_pairs": 10000,
+    "min_pair_difference": 15.0,
+    "note": "Coordinates are terrain-specific. Reuse these exact start/goal pairs for every D and every Monte Carlo seed on this terrain.",
+    "beta_definition": "beta = representative scenario edge distance / representative scenario edge hazard probability. The representative edge is the fixed start-to-goal scenario edge evaluated using the RRT* edge-distance and edge-hazard definitions. Beta is fixed for all alpha values and Monte Carlo seeds of that terrain/scenario."
+  },
+  "terrain": {
+    "grid_width": 162,
+    "grid_height": 161
+  },
+  "scenarios": {
+    "mixed": [],
+    "mud": [],
+    "water": [],
+    "hazard": [],
+    "long": [
+      {
+        "scenario_id": "long_01",
+        "start": [
+          25,
+          40
+        ],
+        "goal": [
+          145,
+          130
+        ],
+        "distance_cells": 150.0,
+        "line_terrain_counts": {
+          "rock": 151,
+          "mud": 0,
+          "water": 0,
+          "total": 151
+        },
+        "selection_score": 150.0,
+        "beta": 75.00000101346794
+      },
+      {
+        "scenario_id": "long_02",
+        "start": [
+          17,
+          100
+        ],
+        "goal": [
+          137,
+          10
+        ],
+        "distance_cells": 150.0,
+        "line_terrain_counts": {
+          "rock": 151,
+          "mud": 0,
+          "water": 0,
+          "total": 151
+        },
+        "selection_score": 150.0,
+        "beta": 75.00000000029604
+      },
+      {
+        "scenario_id": "long_03",
+        "start": [
+          5,
+          59
+        ],
+        "goal": [
+          154,
+          76
+        ],
+        "distance_cells": 149.96666296213968,
+        "line_terrain_counts": {
+          "rock": 150,
+          "mud": 0,
+          "water": 0,
+          "total": 150
+        },
+        "selection_score": 149.96666296213968,
+        "beta": 74.98337182560965
+      },
+      {
+        "scenario_id": "long_04",
+        "start": [
+          36,
+          139
+        ],
+        "goal": [
+          139,
+          30
+        ],
+        "distance_cells": 149.96666296213968,
+        "line_terrain_counts": {
+          "rock": 138,
+          "mud": 0,
+          "water": 0,
+          "total": 138
+        },
+        "selection_score": 149.96666296213968,
+        "beta": 74.98333148108553
+      },
+      {
+        "scenario_id": "long_05",
+        "start": [
+          37,
+          122
+        ],
+        "goal": [
+          153,
+          27
+        ],
+        "distance_cells": 149.93665329064805,
+        "line_terrain_counts": {
+          "rock": 140,
+          "mud": 0,
+          "water": 0,
+          "total": 140
+        },
+        "selection_score": 149.93665329064805,
+        "beta": 74.96832664630786
+      }
+    ]
+  }
+}

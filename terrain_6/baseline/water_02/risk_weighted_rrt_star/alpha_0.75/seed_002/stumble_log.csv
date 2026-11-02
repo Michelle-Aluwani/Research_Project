@@ -1,0 +1,5 @@
+time,x,y,terrain,kind,reason,ratio,slope_deg
+11.737499999999654,-12.550100845307552,-181.37573798055246,mud,stumble,"wet mud 0.50 m from water (patch ratio 0.20, near wet edge)",0.19611613513818404,
+25.429166666665544,-18.08531624280553,-181.7062020606403,mud,stumble,"wet mud 0.50 m from water (patch ratio 0.20, near wet edge)",0.19611613513818404,
+27.529166666665425,-18.61263537183662,-182.40794515345794,mud,slip,"mud 1.00 m from water (patch ratio 0.39, deep in patch)",0.3922322702763681,
+29.254166666665327,-18.921174613557127,-183.0301012747333,mud,slip,"mud 1.58 m from water (patch ratio 0.62, deep in patch)",0.6201736729460423,

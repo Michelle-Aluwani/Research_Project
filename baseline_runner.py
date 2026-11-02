@@ -7,8 +7,7 @@ Runs the supplied Standard RRT* and Risk-weighted RRT* baselines using:
     - the same terrain folders as CMDP,
     - the same terrain-specific start/goal scenarios,
     - the same 25 Monte Carlo seeds,
-    - the same existing run.py physical execution,
-    - and no modification to run.py.
+    - and the same run.py physical execution (headless, per-trial output).
 
 Important:
     RRT* paths are deliberately saved as:
@@ -21,7 +20,7 @@ The file name does NOT mean the path came from CMDP.
 For every planner seed:
     1. RRT* generates one stochastic path.
     2. That path is saved as cmdp_path_world.csv.
-    3. The untouched run.py is called with that path.
+    3. run.py is called with that path.
     4. The same seed is passed to run.py.
 
 Risk-weighted RRT* uses:
@@ -35,11 +34,16 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-ALPHA_VALUES = [0.0, 0.25, 0.50, 0.75, 1.0]
-NUM_MONTE_CARLO = 25
+ALPHA_VALUES = [0,0.25,0.50, 0.75,1.0]
+NUM_MONTE_CARLO = 3
 SCENARIO_SEED = 42
+
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
 RRT_SCRIPT = "rrt_baseline.py"
 RUN_SCRIPT = "run.py"
@@ -51,20 +55,32 @@ BASELINE_RISK_BUDGET = 0.0
 
 
 def run_command(cmd, cwd):
+    """Run a command and return its exit code. Never raises on failure."""
     print("\n" + "=" * 80)
     print("RUNNING:")
     print(" ".join(str(x) for x in cmd))
     print("=" * 80)
 
     result = subprocess.run(cmd, cwd=str(cwd), check=False)
-
-    if result.returncode not in (0, 2):
-        raise RuntimeError(
-            f"Command failed with exit code {result.returncode}:\n"
-            f"{' '.join(str(x) for x in cmd)}"
-        )
-
     return result.returncode
+
+
+def log_failure(terrain_dir, what, cmd=None, returncode=None):
+    """Append one failure record to <terrain_dir>/failures.jsonl and go on."""
+    record = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "what": what,
+        "returncode": returncode,
+        "cmd": " ".join(str(x) for x in cmd) if cmd else None,
+    }
+    print(f"\n!!! FAILURE (continuing): {what} (exit code {returncode})")
+    try:
+        with (Path(terrain_dir) / "failures.jsonl").open(
+            "a", encoding="utf-8"
+        ) as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
 
 
 def load_json(path):
@@ -132,14 +148,21 @@ def ensure_betas(terrain_dir, scenario_file, experiment_dir, python_exe):
         if "beta" in scenario and scenario["beta"] is not None:
             continue
 
-        beta = calculate_beta_once(
-            terrain_dir=terrain_dir,
-            scenario_id=scenario["scenario_id"],
-            start=scenario["start"],
-            goal=scenario["goal"],
-            experiment_dir=experiment_dir,
-            python_exe=python_exe,
-        )
+        try:
+            beta = calculate_beta_once(
+                terrain_dir=terrain_dir,
+                scenario_id=scenario["scenario_id"],
+                start=scenario["start"],
+                goal=scenario["goal"],
+                experiment_dir=experiment_dir,
+                python_exe=python_exe,
+            )
+        except Exception as exc:
+            log_failure(
+                terrain_dir,
+                f"beta {scenario['scenario_id']}: {exc}",
+            )
+            continue
 
         for item in data["scenarios"][scenario["scenario_type"]]:
             if item["scenario_id"] == scenario["scenario_id"]:
@@ -243,8 +266,14 @@ def run_planner(
         )
         return None, planner_result
 
-    if not path_output.exists():
-        raise RuntimeError(f"Planner did not create path: {path_output}")
+    if return_code != 0 or not path_output.exists():
+        log_failure(
+            terrain_dir,
+            f"planner {scenario_id} {algorithm} alpha={alpha} seed={seed}",
+            cmd,
+            return_code,
+        )
+        return None, planner_result
 
     return path_output, planner_result
 
@@ -285,9 +314,7 @@ def run_pybullet(
         print(f"PyBullet already completed: {result_files[0]}")
         return
 
-    # IMPORTANT:
-    # This is the existing run.py interface. run.py itself is untouched.
-    run_command(
+    cmd = (
         [
             python_exe,
             str(experiment_dir / RUN_SCRIPT),
@@ -304,9 +331,16 @@ def run_pybullet(
             "--output-dir",
             str(execution_dir),
             "--headless",
-        ],
-        cwd=experiment_dir,
+        ]
     )
+    code = run_command(cmd, cwd=experiment_dir)
+    if code != 0:
+        log_failure(
+            terrain_dir,
+            f"PyBullet {scenario_id} {algorithm} alpha={alpha} seed={seed}",
+            cmd,
+            code,
+        )
 
 
 def run_terrain(terrain_dir, experiment_dir, python_exe):
@@ -326,6 +360,10 @@ def run_terrain(terrain_dir, experiment_dir, python_exe):
     )
 
     for scenario in scenarios:
+        if scenario.get("beta") is None:
+            print(f"Skipping {scenario['scenario_id']}: beta unavailable.")
+            continue
+
         beta = float(scenario["beta"])
 
         print("\n" + "#" * 80)
@@ -404,7 +442,7 @@ def main():
     parser.add_argument(
         "--terrain",
         default=None,
-        help="Run one terrain, e.g. terrain_01. Omit to run all terrain_* folders.",
+        help="Run one terrain, e.g. terrain_1. Omit to run all terrain_* folders.",
     )
 
     parser.add_argument(
@@ -429,8 +467,25 @@ def main():
         raise RuntimeError(f"No terrain folders found in {experiments_dir}")
 
     for terrain_dir in terrains:
-        if not (terrain_dir / "terrain_grid.json").exists():
+        grid_json = terrain_dir / "terrain_grid.json"
+        if not grid_json.exists():
             print(f"Skipping {terrain_dir}: no terrain_grid.json")
+            continue
+
+        try:
+            from cmdp_refactored import TERRAIN_GRID_SCHEMA_VERSION
+            with grid_json.open("r", encoding="utf-8") as f:
+                version = int(
+                    json.load(f)["metadata"].get("schema_version", 0)
+                )
+        except Exception:
+            version = 0
+        if version < TERRAIN_GRID_SCHEMA_VERSION:
+            print(
+                f"Skipping {terrain_dir}: terrain_grid.json is from an "
+                "older pipeline version. Run experiment_runner.py first; "
+                "it regenerates it."
+            )
             continue
 
         run_terrain(
